@@ -1,0 +1,11 @@
+fastapi==0.110.0
+uvicorn==0.27.1
+httpx==0.26.0
+# asyncpg==0.29.0 # Keep only one asyncpg entry
+pydantic==2.6.1
+debugpy
+SQLAlchemy
+asyncpg
+psycopg[binary]
+pydantic-settings
+alembic

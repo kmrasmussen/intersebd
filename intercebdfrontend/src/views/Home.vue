@@ -156,7 +156,7 @@ from openai import OpenAI
 import os
 
 client = OpenAI(
-  base_url="{{ API_BASE_URL }}/v1"
+  base_url="{{ API_BASE_URL }}/v1",
 )
 
 completion = client.chat.completions.create(

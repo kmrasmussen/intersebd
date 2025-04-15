@@ -20,25 +20,28 @@ router = APIRouter(
 
 class GenerateGuestKeyResponseDto(BaseModel):
     id: uuid.UUID
-    key_hash: str
-    name: str
-    label: str
-    key_value: str
-    limit_usd: Optional[float] = None
-    usage_usd: float
-    created_at_api: datetime
-    created_at_db: datetime
+    or_key_hash : str
+    or_name: str
+    or_label: str
+    or_disabled: bool
+    or_limit: int
+    or_created_at: datetime
+    or_created_at: datetime
+    or_updated_at: datetime
+    or_key: str
+    or_usage: int
     is_active: bool
+    user_id: Optional[str] = None
 
     class Config:
-        from_attributes = True
+      from_attributes = True
 
 @router.post('/openrouter/generate_guest_api_key', response_model=GenerateGuestKeyResponseDto)
 async def generate_guest_openrouter_api_key(session : AsyncSession = Depends(get_db)):
   openrouter_guest_api_key_uuid = str(uuid.uuid4())
 
   key_name = f"intercebd_guest_{openrouter_guest_api_key_uuid}"
-  guest_limit = getattr(settings, "openrouter_guest_limit", 5)
+  guest_limit = getattr(settings, "openrouter_provisioning_api_guest_limit", 5)
   try:
     async with httpx.AsyncClient() as client:
       response = await client.post(
@@ -114,18 +117,11 @@ async def generate_guest_openrouter_api_key(session : AsyncSession = Depends(get
     await session.rollback()
     raise HTTPException(status_code=500, detail="Failed to save generated key to database.")
 
-  # Map DB model fields back to DTO fields for the response
-  response_dto = GenerateGuestKeyResponseDto(
-    id=new_key_record.id,
-    key_hash=new_key_record.or_key_hash,
-    name=new_key_record.or_name,
-    label=new_key_record.or_label,
-    key_value=new_key_record.or_key,
-    limit_usd=float(new_key_record.or_limit) if new_key_record.or_limit is not None else None, # Convert back to float for DTO
-    usage_usd=float(new_key_record.or_usage) if new_key_record.or_usage is not None else 0.0, # Convert back to float for DTO
-    created_at_api=new_key_record.or_created_at, # Use the correct field
-    created_at_db=new_key_record.created_at_db, # Assuming you add created_at_db to your model
-    is_active=new_key_record.is_active
-  )
+  try:
+    response_dto = GenerateGuestKeyResponseDto.model_validate(new_key_record)
+  except Exception as validation_exc:
+    logger.error(f"Error validating response DTO from model: {validation_exc}")
+    # Handle the case where the model data doesn't match the DTO schema
+    raise HTTPException(status_code=500, detail="Internal server error creating response.")
 
   return response_dto

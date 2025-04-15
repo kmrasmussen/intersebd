@@ -21,9 +21,15 @@ from starlette.middleware.sessions import SessionMiddleware
 
 # imports from solution
 from auth import router as auth_router
-from intercept_keys import router as intercept_keys_router
+from intercept_keys import router as intercept_keys_router, find_openrouter_key_by_intercept_key
 from provider_keys import router as provider_keys_router
 from config import settings
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s') # Ensure level is DEBUG
+logger = logging.getLogger(__name__)
+
 
 # Initialize FastAPI app
 app = FastAPI(title="intercebd-backend", version="0.1.0")
@@ -369,7 +375,7 @@ async def get_unique_request_messages(intercept_key: uuid.UUID, session: AsyncSe
 
 
 @app.api_route("/v1/chat/completions", methods=["POST"])
-async def proxy(request: Request):
+async def proxy(request: Request, session: AsyncSession = Depends(get_db)):
 
   body = await request.body()
 
@@ -382,8 +388,38 @@ async def proxy(request: Request):
   # Let the target server decide how to encode its response
   headers.pop("accept-encoding", None)
   
-  # Extract API key for future user management
-  api_key = headers.get("authorization", "")
+  auth_header = headers.get("authorization", "")
+  api_key = None
+  if auth_header.lower().startswith("bearer "):
+      api_key = auth_header[7:] # Get the part after "Bearer "
+  else:
+      # Handle cases where the header is missing or doesn't start with Bearer
+      logger.warning(f"Invalid or missing Authorization header format: {auth_header}")
+      raise HTTPException(status_code=401, detail="Invalid Authorization header format.")
+
+  if not api_key: # Double check if api_key extraction failed
+        raise HTTPException(status_code=401, detail="Authorization token missing.")
+
+  # test raise exception with api key
+  #raise HTTPException(status_code=401, detail=f"Test exception with api key, {api_key}")
+
+  try:
+    matching_openrouter_key = await find_openrouter_key_by_intercept_key(api_key, session)
+    #raise HTTPException(status_code=401, detail=f"Test exception with api key and openrouter, {api_key} and or: {matching_openrouter_key.or_key}")
+    if not matching_openrouter_key:
+        # Handle case where intercept key is valid but no matching OpenRouter key is found
+        raise HTTPException(status_code=401, detail=f"Valid intercept key, but no corresponding OpenRouter key configured: {matching_openrouter_key}")
+    # Replace the incoming Authorization header with the found OpenRouter key
+    headers["authorization"] = f"Bearer {matching_openrouter_key.or_key}"
+    print("Replaced Authorization header with OpenRouter key.")
+  except HTTPException as http_exc: # Re-raise specific HTTP exceptions
+      raise http_exc
+  except Exception as e:
+    # Log the actual error for debugging
+    logger.error(f"Error during OpenRouter key lookup or processing for intercept key {api_key}: {e}", exc_info=True)
+    raise HTTPException(status_code=500, detail=f"Error finding or processing OpenRouter key")
+
+
   # In the future, we would validate and swap this key with our managed keys
   intercept_key_str = request.headers.get("x-intercept-key")
   intercept_key_uuid = None
@@ -403,12 +439,15 @@ async def proxy(request: Request):
   target_url = OPENROUTER_CHAT_COMPLETIONS_ENDPOINT #f"{OPENAI_API_BASE}/{path}"
   
   try:
-    # Forward the request to OpenAI
+    # Forward the request to OpenRouter
     async with httpx.AsyncClient() as client:
+      # Log the headers just before sending the request
+      logger.debug(f"Forwarding request to {target_url} with headers: {headers}") # <-- ADD THIS LINE
+
       response = await client.request(
           method=request.method,
           url=target_url,
-          headers=headers,
+          headers=headers, # Ensure this 'headers' dict contains the correct Authorization
           content=body,
           follow_redirects=True
       )
@@ -527,7 +566,7 @@ async def proxy(request: Request):
     )
       
   except httpx.RequestError as exc:
-      logger.error(f"Error making request to OpenAI: {exc}")
+      logger.error(f"Error making request to OpenRouter: {exc}")
       return JSONResponse(
           status_code=500,
           content={"error": f"Error proxying request: {str(exc)}"}

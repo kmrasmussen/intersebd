@@ -19,6 +19,7 @@ class InterceptKey(Base):
     intercept_key = Column(String, nullable=False, unique=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     is_valid = Column(Boolean, default=True, nullable=False)
+    user_is_guest = Column(Boolean, default=False, nullable=True)
 
 class RequestsLog(Base):
     __tablename__ = "requests_log"
@@ -122,3 +123,4 @@ class OpenRouterGuestKey(Base):
     or_key = Column(String, nullable=False)
     or_usage = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
+    user_id = Column(String, nullable=True)  # Optional user ID

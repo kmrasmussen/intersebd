@@ -27,14 +27,14 @@ services:
     depends_on:
       - postgres
     
-  intercept:
+  intercept_backend:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
       - "9003:9003"
-    environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres/postgres
+    env_file:
+      - .env
     volumes:
       - .:/app
     depends_on:

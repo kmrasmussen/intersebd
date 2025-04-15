@@ -16,13 +16,45 @@ import hashlib
 from fastapi import Depends
 from pydantic import BaseModel
 from sqlalchemy import func, select, text # Import text for potential raw SQL needs if array_agg index fails
+from fastapi.middleware.cors import CORSMiddleware # Import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
+
+# imports from solution
+from auth import router as auth_router
+from intercept_keys import router as intercept_keys_router
+from provider_keys import router as provider_keys_router
+from config import settings
 
 # Initialize FastAPI app
-app = FastAPI(title="OpenAI API Proxy")
+app = FastAPI(title="intercebd-backend", version="0.1.0")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+origins = [
+    "*",  # Allows all origins - BE CAREFUL IN PRODUCTION!
+    # Add your specific frontend origin(s) here for production, e.g.:
+    "http://localhost:5173/",
+    # "https://yourfrontenddomain.com",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"],  # Allows all headers
+)
+
+app.add_middleware(
+   SessionMiddleware,
+   secret_key=settings.session_secret_key,
+)
+
+app.include_router(auth_router)  # Include the auth router
+app.include_router(intercept_keys_router)
+app.include_router(provider_keys_router)
 
 # Directory to store request logs
 LOGS_DIR = "request_logs"
@@ -38,6 +70,58 @@ http_client = httpx.AsyncClient(timeout=60.0)
 
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
+
+class CompletionsAnnotationRequestDto(BaseModel):
+   completion_response_id: str
+   rater_id: Optional[str] = None
+   reward: Optional[float] = None
+   annotation_metadata : Optional[Dict] = None
+   intercept_key: uuid.UUID
+
+class CompletionsAnnotationResponseDto(BaseModel):
+    annotation_id: str
+    status: str
+    message: str
+
+@app.post("/v1/chat/completions/annotation", response_model=CompletionsAnnotationResponseDto)
+async def create_annotation(request: CompletionsAnnotationRequestDto, session: AsyncSession = Depends(get_db)):
+    # verify that a completion response with that id exists
+    stmt = (
+        select(CompletionResponse)
+        .options(selectinload(CompletionResponse.request_log)) # Eager load choices
+        .where(CompletionResponse.id == request.completion_response_id)
+    )
+    result = await session.execute(stmt)
+    print('createannotation response lookup result', result)
+    completion_response = result.scalar_one_or_none()
+
+    if not completion_response:
+        logger.warning(f"CompletionResponse not found: {request.completion_response_id}")
+        raise HTTPException(status_code=404, detail="Completion response not found")
+    
+    if completion_response.request_log.intercept_key != request.intercept_key:
+        logger.warning(f"Intercept key mismatch for CompletionResponse ID: {request.completion_response_id}. Expected {completion_response.request_log.intercept_key}, got {request.intercept_key}")
+        raise HTTPException(status_code=403, detail="Intercept key mismatch")
+
+    annotation = CompletionAnnotation(
+        completion_id=request.completion_response_id,
+        rater_id=request.rater_id,
+        reward=request.reward,
+        annotation_metadata=request.annotation_metadata
+        # Note: intercept_key is implicitly validated via the completion_response relationship
+    )
+
+    session.add(annotation)
+    await session.commit()
+    await session.refresh(annotation) # To get the generated ID and timestamp
+
+    logger.info(f"Annotation created successfully with ID: {annotation.id}")
+
+    return CompletionsAnnotationResponseDto(
+        annotation_id=str(annotation.id),
+        status="success",
+        message="Annotation created successfully"
+    )
 
 class CompletionsRaterNotificationRequestDto(BaseModel):
     rater_id: str
@@ -294,6 +378,9 @@ async def proxy(request: Request):
   # Convert headers to dict and filter out host header
   headers = dict(request.headers)
   headers.pop("host", None)
+  # Also remove accept-encoding, as the proxy will handle decoding if necessary
+  # Let the target server decide how to encode its response
+  headers.pop("accept-encoding", None)
   
   # Extract API key for future user management
   api_key = headers.get("authorization", "")
@@ -420,11 +507,23 @@ async def proxy(request: Request):
             # Optionally log to file as fallback here if DB fails
 
     
+    # Prepare headers for the response back to the original client
+    # Filter out headers that should not be blindly forwarded
+    response_headers = {
+        k: v for k, v in response.headers.items()
+        if k.lower() not in [
+            'content-encoding',
+            'transfer-encoding',
+            'connection',
+            'content-length', # Will be set automatically by FastAPI/Starlette
+        ]
+    }
+
     # Return the response to the client
     return Response(
-        content=response.content,
+        content=response.content, # Forward the raw content bytes
         status_code=response.status_code,
-        headers=dict(response.headers)
+        headers=response_headers # Forward filtered headers
     )
       
   except httpx.RequestError as exc:

@@ -1,5 +1,5 @@
 # filepath: /home/kasper/randomrepos/intercept_calls/models.py
-from sqlalchemy import Column, Integer, String, DateTime, JSON
+from sqlalchemy import Column, Integer, String, DateTime, JSON, Float, Boolean
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID # Use PostgreSQL UUID type
 from sqlalchemy.sql import func
 import uuid
@@ -10,6 +10,15 @@ from sqlalchemy import Text
 from sqlalchemy.dialects.postgresql import UUID
 
 from database import Base
+
+class InterceptKey(Base):
+    __tablename__ = "intercept_keys"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(String, index=True) # Store as String
+    intercept_key = Column(String, nullable=False, unique=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    is_valid = Column(Boolean, default=True, nullable=False)
 
 class RequestsLog(Base):
     __tablename__ = "requests_log"
@@ -64,6 +73,8 @@ class CompletionResponse(Base):
     
     # Relationship to message choices
     choices = relationship("CompletionChoice", back_populates="completion")
+
+    annotations = relationship("CompletionAnnotation", back_populates="completion_response")
     
     # Usage statistics
     prompt_tokens = Column(Integer)
@@ -82,3 +93,32 @@ class CompletionChoice(Base):
     
     # Relationship to parent completion
     completion = relationship("CompletionResponse", back_populates="choices")
+
+class CompletionAnnotation(Base):
+    __tablename__ = "completion_annotations"
+    
+    id = Column(UUID, primary_key=True, default=uuid.uuid4)
+    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    completion_id = Column(String, ForeignKey("completion_responses.id"))
+    rater_id = Column(String)
+    reward = Column(Float)  # Rating given by the rater
+    annotation_metadata = Column(JSON)  # Feedback provided by the rater
+    
+    # Relationship to parent completion
+    completion_response = relationship("CompletionResponse", back_populates="annotations")
+
+class OpenRouterGuestKey(Base):
+    __tablename__ = "openrouter_guest_keys"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    or_key_hash = Column(String, unique=True, index=True, nullable=False)
+    or_name = Column(String, nullable=False)
+    or_label = Column(String, nullable=False)
+    or_disabled = Column(Boolean, default=False)
+    or_limit = Column(Integer, default=5)
+    or_created_at = Column(DateTime(timezone=True), server_default=func.now())
+    or_created_at = Column(DateTime(timezone=True), server_default=func.now())
+    or_updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True)
+    or_key = Column(String, nullable=False)
+    or_usage = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)

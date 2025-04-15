@@ -9,3 +9,5 @@ asyncpg
 psycopg[binary]
 pydantic-settings
 alembic
+authlib
+itsdangerous

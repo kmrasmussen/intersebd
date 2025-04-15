@@ -5,17 +5,10 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from pydantic_settings import BaseSettings
 import os
 import logging
+from config import settings
 
-logger = logging.getLogger("yoness")
+logger = logging.getLogger(__name__)
 
-class Settings(BaseSettings):
-    # Default to the value in docker-compose if DATABASE_URL env var is not set
-    database_url: str = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@postgres/intercept")
-
-    class Config:
-        env_file = '.env' # Optional: Load from .env file if needed
-
-settings = Settings()
 
 # Use asyncpg for the database connection
 engine = create_async_engine(settings.database_url, echo=True) # echo=True for debugging SQL

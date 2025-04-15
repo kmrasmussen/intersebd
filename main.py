@@ -419,22 +419,6 @@ async def proxy(request: Request, session: AsyncSession = Depends(get_db)):
     logger.error(f"Error during OpenRouter key lookup or processing for intercept key {api_key}: {e}", exc_info=True)
     raise HTTPException(status_code=500, detail=f"Error finding or processing OpenRouter key")
 
-
-  # In the future, we would validate and swap this key with our managed keys
-  intercept_key_str = request.headers.get("x-intercept-key")
-  intercept_key_uuid = None
-  is_key_valid = False
-
-  # Validate UUID
-  if intercept_key_str:
-    try:
-      intercept_key_uuid = uuid.UUID(intercept_key_str)
-      is_key_valid = True
-      print(f"Valid intercept key found: {intercept_key_uuid}")
-    except ValueError:
-      print(f"Invalid intercept key format: {intercept_key_str}")
-      # Optionally raise HTTPException(400, "Invalid x-intercept-key format")
-      # Or just proceed without DB logging
   # Construct target URL
   target_url = OPENROUTER_CHAT_COMPLETIONS_ENDPOINT #f"{OPENAI_API_BASE}/{path}"
   
@@ -452,13 +436,12 @@ async def proxy(request: Request, session: AsyncSession = Depends(get_db)):
           follow_redirects=True
       )
 
-      if is_key_valid:
-        try:
+      try:
           # Get a new DB session for this request
 
-          async for session in get_db(): # Use the dependency
+        async for session in get_db(): # Use the dependency
             log_entry = RequestsLog(
-              intercept_key=intercept_key_uuid,
+            intercept_key=api_key,
               request_method=request.method,
               request_url=str(request.url),
               request_headers=dict(request.headers), # Store all headers for now
@@ -539,10 +522,11 @@ async def proxy(request: Request, session: AsyncSession = Depends(get_db)):
             # Add an explicit commit here to see if it helps
             await session.commit()
             print("Committed to database")
-            print(f"Logged request/response for key {intercept_key_uuid} to DB")
+            print(f"Logged request/response for key {api_key} to DB")
 
-        except Exception as e:
-            print(f"Failed to log request to DB for key {intercept_key_uuid}: {e}")
+      except Exception as e:
+        print(f"Failed to log request to DB for key {api_key}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to log request to DB")
             # Optionally log to file as fallback here if DB fails
 
     

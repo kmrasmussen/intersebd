@@ -1,18 +1,32 @@
 <script setup lang="ts">
-import { ref, onMounted, Ref, computed, isRef } from 'vue'; // Import computed
+import { ref, onMounted, Ref, computed, isRef } from 'vue';
 import { useRoute } from 'vue-router';
 import { useCompletionPairs } from '../useCompletionPairs';
+import { useExampleLlmCall } from '../useExampleLlmCall';
+import { useClipboard } from '../useClipboard';
+import { useAnnotation } from '../useAnnotation'; // Import the new composable
 import { API_BASE_URL } from '../config';
+
 const route = useRoute();
 const viewingId = route.params.viewingId as string;
-const { pairs, interceptKey, isLoading, error, startPolling, stopPolling} = useCompletionPairs(viewingId);
 
-// State to control which code example is shown
-const selectedExample = ref<'curl' | 'python' | 'javascript'>('python'); // Default to curl
+// --- State ---
+const prompt = ref('What is 2+12?'); // Reactive prompt variable
+const selectedExample = ref<'curl' | 'python' | 'javascript'>('python'); // Default to python
 
-// --- Computed properties for code strings (Single Source of Truth) ---
+// --- Composables ---
+const { pairs, interceptKey, isLoading, error: pairsError, startPolling, stopPolling} = useCompletionPairs(viewingId);
+// Pass the prompt ref to the composable
+const { exampleCallResult, exampleCallError, isCallingExample, makeExampleCall } = useExampleLlmCall(interceptKey, prompt);
+const { copiedCurl, copiedPython, copiedJs, handleCopyClick } = useClipboard();
+// Use the annotation composable
+const { annotationLoading, annotationError, annotationSuccess, annotateRewardOne } = useAnnotation(interceptKey);
+
+// --- Computed properties for code strings (updated to use prompt.value) ---
 const curlCodeString = computed(() => {
   if (!interceptKey.value) return '';
+  // Escape the prompt for JSON string literal
+  const escapedPrompt = JSON.stringify(prompt.value);
   return `curl \\
 -X POST ${API_BASE_URL}/v1/chat/completions \\
 -H "Authorization: Bearer ${interceptKey.value}" \\
@@ -22,7 +36,7 @@ const curlCodeString = computed(() => {
     "messages": [
       {
         "role": "user",
-        "content": "What is 2+12?"
+        "content": ${escapedPrompt}
       }
     ]
   }'`;
@@ -30,6 +44,8 @@ const curlCodeString = computed(() => {
 
 const pythonCodeString = computed(() => {
   if (!interceptKey.value) return '';
+  // Escape backticks and ${} if the prompt might contain them for f-string safety
+  const escapedPrompt = prompt.value.replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
   return `from openai import OpenAI
 
 client = OpenAI(
@@ -42,7 +58,7 @@ completion = client.chat.completions.create(
   messages=[
     {
       "role": "user",
-      "content": "What is 2+12?"
+      "content": f"""${escapedPrompt}"""
     }
   ]
 )
@@ -50,11 +66,26 @@ print(completion)`;
 });
 
 const jsCodeString = computed(() => {
+  if (!interceptKey.value) return '';
+  // Escape backticks, ${}, and single quotes for JS template literal/string safety
+  const escapedPrompt = prompt.value.replace(/`/g, '\\`').replace(/\$\{/g, '\\${').replace(/'/g, "\\'");
   return `const url = '${API_BASE_URL}/v1/chat/completions';
 const options = {
   method: 'POST',
-  headers: {Authorization: 'Bearer ${interceptKey.value}', 'Content-Type': 'application/json'},
-  body: '{"model":"openai/gpt-4.1-nano"}'
+  headers: {
+    Authorization: 'Bearer ${interceptKey.value}',
+    'Content-Type': 'application/json'
+  },
+  // Use JSON.stringify for the body to handle prompt quoting correctly
+  body: JSON.stringify({
+    model: "openai/gpt-4.1-nano",
+    messages: [
+      {
+        role: "user",
+        content: '${escapedPrompt}'
+      }
+    ]
+  })
 };
 try {
   const response = await fetch(url, options);
@@ -65,27 +96,6 @@ try {
 }`;
 });
 // --- End Computed properties ---
-
-// --- Clipboard Logic ---
-// Refs to track copied status for each button
-const copiedCurl = ref(false);
-const copiedPython = ref(false);
-const copiedJs = ref(false);
-// Simplified copyCode - only handles writing to clipboard
-async function copyCode(textToCopy: string): Promise<boolean> { // Returns true on success, false on failure
-  if (!textToCopy) {
-    console.error('Cannot copy empty string.');
-    return false;
-  }
-  try {
-    await navigator.clipboard.writeText(textToCopy);
-    console.log('Code copied successfully.');
-    return true;
-  } catch (err) {
-    console.error('Failed to copy: ', err);
-    return false;
-  }
-}
 
 onMounted(() => {
   if (viewingId) {
@@ -98,38 +108,112 @@ onMounted(() => {
 
 <template>
   <div>
-    point your llm api calls to <b>intercebd</b> to start logging, annotating and fine-tuning your llm usage.
-    <div>
+    <div id="intro">
+      point your llm api calls to <b>intercebd</b> to start logging, annotating and fine-tuning your llm usage.
+    </div>
+    
+    <!-- Start code examples -->
+    <div id="code-examples">
       <button @click="selectedExample = 'curl'" :disabled="selectedExample === 'curl'">curl</button>
       <button @click="selectedExample = 'python'" :disabled="selectedExample === 'python'">python</button>
       <button @click="selectedExample = 'javascript'" :disabled="selectedExample === 'javascript'">javascript</button>
 
       <div v-if="selectedExample === 'curl' && interceptKey" class="code-example">
         <pre><code>{{ curlCodeString }}</code></pre>
-        <button @click="copyCode(curlCodeString, copiedCurl)" class="copy-btn">
+        <!-- Pass 'curl' identifier -->
+        <button @click="handleCopyClick(curlCodeString, 'curl')" class="copy-btn">
           {{ copiedCurl ? 'copied' : 'copy' }}
         </button>
       </div>
       <div v-if="selectedExample === 'python' && interceptKey" class="code-example">
         <pre><code>{{ pythonCodeString }}</code></pre>
-  <button @click="copyCode(pythonCodeString, copiedPython)" class="copy-btn">
+        <!-- Pass 'python' identifier -->
+        <button @click="handleCopyClick(pythonCodeString, 'python')" class="copy-btn">
            {{ copiedPython ? 'copied' : 'copy' }}
         </button>
       </div>
       <div v-if="selectedExample === 'javascript' && interceptKey" class="code-example">
-        <pre><code>{{ jsCodeString }}</code></pre><button @click="copyCode(jsCodeString, copiedJs)" class="copy-btn">
+        <pre><code>{{ jsCodeString }}</code></pre>
+        <!-- Pass 'js' identifier -->
+        <button @click="handleCopyClick(jsCodeString, 'js')" class="copy-btn">
            {{ copiedJs ? 'copied' : 'copy' }}
         </button>
       </div>
 
-       <div v-if="!interceptKey && (isLoading || error)">
-         <p><i>(Code examples will appear here once the intercept key is loaded)</i></p>
+       <!-- Use pairsError here -->
+       <div v-if="!interceptKey && (isLoading || pairsError)">
+         <p><i>(Code examples will appear here once the intercept key is loaded or if there was an error loading it)</i></p>
        </div>
     </div>
-    
+    <!-- End code examples -->
 
-<!-- Collapsible Explanation Section -->
-<details>
+    <div id="run-example">
+      <div class="run-controls">
+        <button @click="makeExampleCall" :disabled="isCallingExample || !interceptKey">
+          {{ isCallingExample ? 'making call now from browser, please wait...' : 'run call shown above' }}
+        </button>
+        <!-- Bind input to the prompt ref -->
+        <input type="text" v-model="prompt" placeholder="Enter prompt here..." class="prompt-input">
+      </div>
+      <div v-if="exampleCallResult" style="margin-top: 10px;">
+        <p><strong>ok, call worked. you can see the response below, but the point is rather that the full list of all calls is below and you can now vote on the good ones</strong></p>
+        <details>
+          <summary>response from example call</summary>
+          <div> <pre><code>{{ JSON.stringify(exampleCallResult, null, 2) }}</code></pre></div>
+        </details>
+       
+      </div>
+      <div v-if="exampleCallError" style="margin-top: 10px; color: red;">
+        <p><strong>Example Call Error:</strong></p>
+        <pre><code>{{ exampleCallError }}</code></pre>
+      </div>
+    </div>
+
+    <br >
+     <!-- Collapsible Explanation Section -->
+  
+
+    <!-- Pairs Display Section -->
+    <div>
+      <h4>Request/Response Pairs</h4>
+      <p><i>(List updates automatically every 5 seconds)</i></p>
+
+      <div v-if="isLoading && pairs.length === 0">
+        <p>Fetching pairs...</p>
+      </div>
+      <div v-else-if="pairsError">
+        <p style="color: red;">Error fetching data: {{ pairsError }}</p>
+      </div>
+      <div v-else-if="pairs.length === 0">
+        <p>No completion pairs found yet.</p>
+      </div>
+      <div v-else>
+        <div v-for="(pair, index) in pairs" :key="pair.request.id" class="pair-container">
+           <!-- Display request/response details -->
+           <p><strong>Pair {{ pairs.length - index }}</strong></p>
+           <h5>Request:</h5>
+           <pre><code>{{ JSON.stringify(pair.request, null, 2) }}</code></pre>
+           <h5>Response:</h5>
+           <pre v-if="pair.response"><code>{{ JSON.stringify(pair.response, null, 2) }}</code></pre>
+           <p v-else><i>(No response yet)</i></p>
+           <div v-if="pair.response" class="annotation-controls">
+             <button
+               @click="annotateRewardOne(pair.response.id)"
+               :disabled="annotationLoading[pair.response.id] || !interceptKey"
+             >
+               {{ annotationLoading[pair.response.id] ? 'Annotating...' : 'Annotate with reward 1' }}
+             </button>
+             <span v-if="annotationSuccess[pair.response.id]" style="color: green; margin-left: 10px;">✓ Annotated!</span>
+             <span v-if="annotationError[pair.response.id]" style="color: red; margin-left: 10px;">{{ annotationError[pair.response.id] }}</span>
+           </div>
+           <hr v-if="index < pairs.length - 1">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <hr>
+  <details>
       <summary>What is this?</summary>
       <div>
         <p>You have been gifted this intercept API key for making LLM calls. This key is like an OpenAI API key; it is meant to be <strong>secret</strong>.</p>
@@ -148,39 +232,6 @@ onMounted(() => {
       <pre><code>{{ interceptKey }}</code></pre>
     </div>
     </details>
-
-    <!-- Pairs Display Section -->
-    <div>
-      <h4>Request/Response Pairs</h4>
-      <p><i>(List updates automatically every 5 seconds)</i></p>
-
-      <div v-if="isLoading && pairs.length === 0">
-        <p>Fetching pairs...</p>
-      </div>
-      <div v-else-if="error">
-        <p style="color: red;">Error fetching data: {{ error }}</p>
-      </div>
-      <div v-else-if="pairs.length === 0">
-        <p>No completion pairs found yet.</p>
-      </div>
-      <div v-else>
-        <div v-for="(pair, index) in pairs" :key="pair.request.id" class="pair-container">
-           <!-- Display request/response details -->
-           <p><strong>Pair {{ pairs.length - index }}</strong></p>
-           <h5>Request:</h5>
-           <pre><code>{{ JSON.stringify(pair.request, null, 2) }}</code></pre>
-           <h5>Response:</h5>
-           <pre v-if="pair.response"><code>{{ JSON.stringify(pair.response, null, 2) }}</code></pre>
-           <p v-else><i>(No response yet)</i></p>
-           <hr v-if="index < pairs.length - 1">
-        </div>
-      </div>
-    </div>
-
-     <!-- Link back to Home -->
-    <router-link :to="{ name: 'home' }">Back to Home</router-link>
-
-  </div>
 </template>
 
 <style scoped>

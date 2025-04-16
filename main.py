@@ -84,7 +84,7 @@ class CompletionsAnnotationRequestDto(BaseModel):
    rater_id: Optional[str] = None
    reward: Optional[float] = None
    annotation_metadata : Optional[Dict] = None
-   intercept_key: uuid.UUID
+   intercept_key: str
 
 class CompletionsAnnotationResponseDto(BaseModel):
     annotation_id: str
@@ -96,19 +96,26 @@ async def create_annotation(request: CompletionsAnnotationRequestDto, session: A
     # verify that a completion response with that id exists
     stmt = (
         select(CompletionResponse)
-        .options(selectinload(CompletionResponse.request_log)) # Eager load choices
+        # Only need to load the related CompletionsRequest
+        .options(selectinload(CompletionResponse.completion_request))
         .where(CompletionResponse.id == request.completion_response_id)
     )
     result = await session.execute(stmt)
-    print('createannotation response lookup result', result)
-    completion_response = result.scalar_one_or_none()
+    # Use unique() for potential future complex queries, good practice
+    completion_response = result.unique().scalar_one_or_none()
 
     if not completion_response:
         logger.warning(f"CompletionResponse not found: {request.completion_response_id}")
         raise HTTPException(status_code=404, detail="Completion response not found")
-    
-    if completion_response.request_log.intercept_key != request.intercept_key:
-        logger.warning(f"Intercept key mismatch for CompletionResponse ID: {request.completion_response_id}. Expected {completion_response.request_log.intercept_key}, got {request.intercept_key}")
+
+    # Check if the related completion_request was loaded
+    if not completion_response.completion_request:
+         logger.error(f"Data integrity issue: Missing completion_request for CompletionResponse ID: {request.completion_response_id}")
+         raise HTTPException(status_code=500, detail="Associated request data not found")
+
+    # Access intercept_key directly from completion_request
+    if completion_response.completion_request.intercept_key != request.intercept_key:
+        logger.warning(f"Intercept key mismatch for CompletionResponse ID: {request.completion_response_id}. Expected {completion_response.completion_request.intercept_key}, got {request.intercept_key}")
         raise HTTPException(status_code=403, detail="Intercept key mismatch")
 
     annotation = CompletionAnnotation(
@@ -116,12 +123,11 @@ async def create_annotation(request: CompletionsAnnotationRequestDto, session: A
         rater_id=request.rater_id,
         reward=request.reward,
         annotation_metadata=request.annotation_metadata
-        # Note: intercept_key is implicitly validated via the completion_response relationship
     )
 
     session.add(annotation)
     await session.commit()
-    await session.refresh(annotation) # To get the generated ID and timestamp
+    await session.refresh(annotation)
 
     logger.info(f"Annotation created successfully with ID: {annotation.id}")
 

@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 class NewInterceptKeyResponse(BaseModel):
   intercept_key: str
+  viewing_id: str
   matching_openrouter_key: str
   message: str
 
@@ -127,6 +128,7 @@ async def create_new_intercept_key(
 
   return NewInterceptKeyResponse(
     intercept_key=new_key_value,
+    viewing_id=new_intercept_key_db_row.viewing_id,
     matching_openrouter_key=matching_openrouter_key.or_key,
     message="New intercept key created successfully"
   )

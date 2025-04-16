@@ -15,6 +15,7 @@ class InterceptKey(Base):
 
     user_id = Column(String, index=True) # Store as String
     intercept_key = Column(String(200), nullable=False, unique=True, primary_key=True) # Changed type
+    viewing_id = Column(String, unique=True, index=True, default=lambda: str(uuid.uuid4()))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     is_valid = Column(Boolean, default=True, nullable=False)
     user_is_guest = Column(Boolean, default=False, nullable=True)
@@ -65,7 +66,7 @@ class CompletionResponse(Base):
     __tablename__ = "completion_responses"
     
     id = Column(String, primary_key=True)  # The OpenAI/OpenRouter response ID
-    completion_request_id = Column(PG_UUID(as_uuid=True), ForeignKey("completions_requests.id"))
+    completion_request_id = Column(PG_UUID(as_uuid=True), ForeignKey("completions_requests.id"), unique=True)
     provider = Column(String)
     model = Column(String)
     created = Column(Integer)

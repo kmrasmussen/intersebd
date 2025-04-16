@@ -23,6 +23,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from auth import router as auth_router
 from intercept_keys import router as intercept_keys_router, find_openrouter_key_by_intercept_key
 from provider_keys import router as provider_keys_router
+from completion_pairs import router as completion_pairs_router
 from config import settings
 import logging
 
@@ -61,6 +62,7 @@ app.add_middleware(
 app.include_router(auth_router)  # Include the auth router
 app.include_router(intercept_keys_router)
 app.include_router(provider_keys_router)
+app.include_router(completion_pairs_router)
 
 # Directory to store request logs
 LOGS_DIR = "request_logs"
@@ -461,54 +463,52 @@ async def proxy(request: Request, session: AsyncSession = Depends(get_db)):
             if response.status_code == 200:
                 try:
                     response_data = json.loads(response.content.decode('utf-8', errors='replace'))
-                    
-                    # Create completion response record
-                    completion = CompletionResponse(
-                        id=response_data["id"],
-                        request_log_id=log_entry.id,  # Link to the original request log
-                        provider=response_data.get("provider", ""),
-                        model=response_data.get("model", ""),
-                        created=response_data.get("created", 0),
-                        prompt_tokens=response_data.get("usage", {}).get("prompt_tokens", 0),
-                        completion_tokens=response_data.get("usage", {}).get("completion_tokens", 0),
-                        total_tokens=response_data.get("usage", {}).get("total_tokens", 0)
-                    )
-                    
-                    session.add(completion)
-
                     body_json_loaded = json.loads(body.decode('utf-8', errors='replace'))
+                    
                     request_body_messages = body_json_loaded.get("messages", [])
-                    print(f"Request body messages: {request_body_messages}")
-                    # Hash the messages for storage
                     messages_hash = hash_json_content(request_body_messages)
-                    print(f"Messages hash: {messages_hash}")
                     request_body_model = body_json_loaded.get("model", "")
-                    print(f"Request body model: {request_body_model}")
-                    # Change the default value from "" to None
                     request_body_response_format = body_json_loaded.get("response_format", None) 
-                    print('Request body response format:', request_body_response_format)
-                    # Hash None as None or handle appropriately if hashing is needed
                     request_body_response_format_hash = hash_json_content(request_body_response_format) if request_body_response_format is not None else None
-                    print('making completion request object')
+
+               
+                    completion_request = CompletionsRequest(
+                      request_log_id=log_entry.id,  # Link to the original request log
+                      intercept_key=api_key,
+                      messages = request_body_messages,
+                      messages_hash = messages_hash,
+                      model = request_body_model,
+                      response_format = request_body_response_format, # Will now store None if not present
+                      response_format_hash= request_body_response_format_hash,
+
+                    )
+                    print('trying to add completion request')
+                    session.add(completion_request)
+                    await session.flush()
+                    print('added completion request with id ', completion_request.id)
 
                     choices = response_data.get("choices")
                     first_choice = choices[0] # Get first choice or empty dict
                     message = first_choice.get("message", {})
 
 
-                    completion_request = CompletionsRequest(
-                      messages = request_body_messages,
-                      messages_hash = messages_hash,
-                      model = request_body_model,
-                      response_format = request_body_response_format, # Will now store None if not present
-                      request_log_id=log_entry.id,  # Link to the original request log
-                      response_format_hash= request_body_response_format_hash,
-                      choice_finish_reason=first_choice.get("finish_reason", ""),
-                      choice_role=message.get("role", ""),
-                      choice_content=message.get("content", "")
+                    # Create completion response record
+                    completion = CompletionResponse(
+                        id=response_data["id"],
+                        completion_request_id=completion_request.id,
+                        provider=response_data.get("provider", ""),
+                        model=response_data.get("model", ""),
+                        created=response_data.get("created", 0),
+                        prompt_tokens=response_data.get("usage", {}).get("prompt_tokens", 0),
+                        completion_tokens=response_data.get("usage", {}).get("completion_tokens", 0),
+                        total_tokens=response_data.get("usage", {}).get("total_tokens", 0),
+                        choice_finish_reason=first_choice.get("finish_reason", ""),
+                        choice_role=message.get("role", ""),
+                        choice_content=message.get("content", "")
                     )
-                    print('trying to add completion request')
-                    session.add(completion_request)
+                    
+                    session.add(completion)
+
                     print('added completion request')
                     # Create choice records
                     

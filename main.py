@@ -490,28 +490,27 @@ async def proxy(request: Request, session: AsyncSession = Depends(get_db)):
                     # Hash None as None or handle appropriately if hashing is needed
                     request_body_response_format_hash = hash_json_content(request_body_response_format) if request_body_response_format is not None else None
                     print('making completion request object')
+
+                    choices = response_data.get("choices")
+                    first_choice = choices[0] # Get first choice or empty dict
+                    message = first_choice.get("message", {})
+
+
                     completion_request = CompletionsRequest(
                       messages = request_body_messages,
                       messages_hash = messages_hash,
                       model = request_body_model,
                       response_format = request_body_response_format, # Will now store None if not present
                       request_log_id=log_entry.id,  # Link to the original request log
-                      response_format_hash= request_body_response_format_hash
+                      response_format_hash= request_body_response_format_hash,
+                      choice_finish_reason=first_choice.get("finish_reason", ""),
+                      choice_role=message.get("role", ""),
+                      choice_content=message.get("content", "")
                     )
                     print('trying to add completion request')
                     session.add(completion_request)
                     print('added completion request')
                     # Create choice records
-                    for idx, choice in enumerate(response_data.get("choices", [])):
-                        message = choice.get("message", {})
-                        choice_record = CompletionChoice(
-                            completion_id=response_data["id"],
-                            index=idx,
-                            finish_reason=choice.get("finish_reason", ""),
-                            role=message.get("role", ""),
-                            content=message.get("content", "")
-                        )
-                        session.add(choice_record)
                     
                     await session.commit()
                     print('committed the structured stuff')

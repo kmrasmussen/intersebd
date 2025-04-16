@@ -1,5 +1,4 @@
-# filepath: /home/kasper/randomrepos/intercept_calls/models.py
-from sqlalchemy import Column, Integer, String, DateTime, JSON, Float, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, JSON, Float, Boolean, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID # Use PostgreSQL UUID type
 from sqlalchemy.sql import func
 import uuid
@@ -14,9 +13,8 @@ from database import Base
 class InterceptKey(Base):
     __tablename__ = "intercept_keys"
 
-    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(String, index=True) # Store as String
-    intercept_key = Column(String, nullable=False, unique=True)
+    intercept_key = Column(String(200), nullable=False, unique=True, primary_key=True) # Changed type
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     is_valid = Column(Boolean, default=True, nullable=False)
     user_is_guest = Column(Boolean, default=False, nullable=True)
@@ -24,25 +22,25 @@ class InterceptKey(Base):
 class RequestsLog(Base):
     __tablename__ = "requests_log"
 
-    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4) # Store as UUI
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     log_timestamp = Column(DateTime(timezone=True), server_default=func.now())
-    intercept_key = Column(PG_UUID(as_uuid=True), index=True) # Store as UUID
+    intercept_key = Column(String(200), ForeignKey("intercept_keys.intercept_key"), index=True) # Changed type
     request_method = Column(String)
     request_url = Column(String)
-    request_headers = Column(JSON) # Store headers as JSON
-    request_body = Column(JSON, nullable=True) # Store body as JSON, allow null
+    request_headers = Column(JSON)
+    request_body = Column(JSON, nullable=True)
     response_status_code = Column(Integer, nullable=True)
     response_headers = Column(JSON, nullable=True)
     response_body = Column(JSON, nullable=True)
 
-    completion = relationship("CompletionResponse", back_populates="request_log", uselist=False)
     completion_request = relationship("CompletionsRequest", back_populates="request_log", uselist=False)
-
+    key_info = relationship("InterceptKey")
 class CompletionsRequest(Base):
     __tablename__ = "completions_requests"
 
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4) # Store as UUID
     request_log_id = Column(PG_UUID(as_uuid=True), ForeignKey("requests_log.id"))
+    intercept_key = Column(String(200), ForeignKey("intercept_keys.intercept_key"), index=True) # Changed type
     messages = Column(JSON) # Store messages as JSON
     messages_hash = Column(String)
     model = Column(String) # e.g., "gpt-3.5-turbo"
@@ -51,29 +49,28 @@ class CompletionsRequest(Base):
 
     request_log = relationship("RequestsLog", back_populates="completion_request", uselist=False)
 
+    completion_response = relationship("CompletionResponse", back_populates="completion_request", uselist=False)
+    key_info = relationship("InterceptKey")
+
 class CompletionsRaterNotification(Base):
     __tablename__ = "completions_rater_notifications"
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4) # Store as UUID
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
     rater_id = Column(String)
     content = Column(Text)  # The content of the message
-    intercept_key = Column(PG_UUID(as_uuid=True))
+    intercept_key = Column(String(200), ForeignKey("intercept_keys.intercept_key")) # Changed type
     completion_response_id = Column(String, ForeignKey("completion_responses.id"))
 
 class CompletionResponse(Base):
     __tablename__ = "completion_responses"
     
     id = Column(String, primary_key=True)  # The OpenAI/OpenRouter response ID
-    request_log_id = Column(UUID, ForeignKey("requests_log.id"))
+    completion_request_id = Column(PG_UUID(as_uuid=True), ForeignKey("completions_requests.id"))
     provider = Column(String)
     model = Column(String)
     created = Column(Integer)
     
-    # Relationship to the original request log
-    request_log = relationship("RequestsLog", back_populates="completion")
-    
-    # Relationship to message choices
-    choices = relationship("CompletionChoice", back_populates="completion")
+    completion_request = relationship("CompletionsRequest", back_populates="completion_response", uselist=False)
 
     annotations = relationship("CompletionAnnotation", back_populates="completion_response")
     
@@ -82,19 +79,11 @@ class CompletionResponse(Base):
     completion_tokens = Column(Integer)
     total_tokens = Column(Integer)
 
-class CompletionChoice(Base):
-    __tablename__ = "completion_choices"
+    # completion choice
+    choice_finish_reason = Column(String)
+    choice_role = Column(String)  # From message.role
+    choice_content = Column(Text)  # From message.content
     
-    id = Column(UUID, primary_key=True, default=uuid.uuid4)
-    completion_id = Column(String, ForeignKey("completion_responses.id"))
-    index = Column(Integer)
-    finish_reason = Column(String)
-    role = Column(String)  # From message.role
-    content = Column(Text)  # From message.content
-    
-    # Relationship to parent completion
-    completion = relationship("CompletionResponse", back_populates="choices")
-
 class CompletionAnnotation(Base):
     __tablename__ = "completion_annotations"
     

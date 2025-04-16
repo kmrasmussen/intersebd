@@ -88,7 +88,7 @@ async def create_new_intercept_key(
   guest_user_uuid = str(uuid.uuid4())
 
   new_key_value_token = secrets.token_urlsafe(40)
-  new_key_value = str(uuid.uuid4())# f"sk-intercebd-v1-{new_key_value_token}"
+  new_key_value = f"sk-intercebd-v1-{new_key_value_token}"
 
   guest_user_id = f"guest_{guest_user_uuid}"
 

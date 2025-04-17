@@ -30,6 +30,7 @@ const firstValidKey = computed(() => {
 
 const promptContent = ref("What is 2+2?");
 
+/*
 const codeBlockRef = ref<HTMLElement | null>(null);
   const highlightCode = () => {
   if (codeBlockRef.value) {
@@ -44,6 +45,7 @@ const codeBlockRef = ref<HTMLElement | null>(null);
     }
   }
 };
+*/
 
 onMounted(async () => {
   await checkLoginStatus();
@@ -60,12 +62,12 @@ onMounted(async () => {
   } else {
     console.log('user is not authenticated on mount')
   }
-  highlightCode();
+  //highlightCode();
 });
 
 // Re-apply highlighting after any component update
 onUpdated(() => {
-  highlightCode();
+  //highlightCode();
 });
 
 
@@ -156,7 +158,7 @@ from openai import OpenAI
 import os
 
 client = OpenAI(
-  base_url="{{ API_BASE_URL }}/v1",
+  base_url="{{ API_BASE_URL }}/v1"
 )
 
 completion = client.chat.completions.create(

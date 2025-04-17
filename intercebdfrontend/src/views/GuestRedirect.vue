@@ -13,7 +13,7 @@ interface GuestKeyResponse {
   intercept_key: string;
   viewing_id: string;
   matching_openrouter_key: string;
-  message;
+  message : string;
 }
 
 onMounted(async () => {

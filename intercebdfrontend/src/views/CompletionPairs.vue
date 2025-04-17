@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, Ref, computed, isRef } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import { useRoute } from 'vue-router';
 import { useCompletionPairs } from '../useCompletionPairs';
 import { useExampleLlmCall } from '../useExampleLlmCall';
@@ -15,7 +15,7 @@ const prompt = ref('What is 2+12?'); // Reactive prompt variable
 const selectedExample = ref<'curl' | 'python' | 'javascript'>('python'); // Default to python
 
 // --- Composables ---
-const { pairs, interceptKey, isLoading, error: pairsError, startPolling, stopPolling} = useCompletionPairs(viewingId);
+const { pairs, interceptKey, isLoading, error: pairsError, startPolling } = useCompletionPairs(viewingId);
 // Pass the prompt ref to the composable
 const { exampleCallResult, exampleCallError, isCallingExample, makeExampleCall } = useExampleLlmCall(interceptKey, prompt);
 const { copiedCurl, copiedPython, copiedJs, handleCopyClick } = useClipboard();

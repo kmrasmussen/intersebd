@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     frontend_base_url: str
     openrouter_provisioning_api_key: str
     openrouter_provisioning_api_base_url: str
-    openrouter_provisioning_api_guest_limit: int
+    openrouter_provisioning_api_guest_limit: float
 
     class Config:
         env_file = '.env'

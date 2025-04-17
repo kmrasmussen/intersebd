@@ -41,13 +41,19 @@ class InterceptKeyDetails(BaseModel):
 class ListInterceptKeysResponse(BaseModel):
   keys: List[InterceptKeyDetails]
 
-router = APIRouter(
+authenticated_router = APIRouter(
   prefix='/intercept-keys',
   tags=["Intercept keys"],
   dependencies=[Depends(get_current_user)]
 )
 
-@router.post('/',
+public_router = APIRouter(
+    prefix='/intercept-keys',
+    tags=["Intercept keys (Public)"] # Optional: different tag for Swagger UI
+    # NO auth dependency here
+)
+
+@authenticated_router.post('/',
              response_model=NewInterceptKeyResponse,
              status_code=status.HTTP_201_CREATED)
 async def create_new_intercept_key(
@@ -79,7 +85,7 @@ async def create_new_intercept_key(
     message="New intercept key created successfully"
   )
 
-@router.post('/guest',
+@public_router.post('/guest',
              response_model=NewInterceptKeyResponse,
              status_code=status.HTTP_201_CREATED)
 async def create_new_intercept_key(
@@ -134,7 +140,7 @@ async def create_new_intercept_key(
   )
 
 
-@router.get('/', response_model=ListInterceptKeysResponse)
+@authenticated_router.get('/', response_model=ListInterceptKeysResponse)
 async def list_intercept_keys(
   current_user: UserInfo = Depends(get_current_user),
   session: AsyncSession = Depends(get_db)

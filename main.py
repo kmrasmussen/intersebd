@@ -21,7 +21,9 @@ from starlette.middleware.sessions import SessionMiddleware
 
 # imports from solution
 from auth import router as auth_router
-from intercept_keys import router as intercept_keys_router, find_openrouter_key_by_intercept_key
+from intercept_keys import public_router as intercept_keys_public_router
+from intercept_keys import authenticated_router as intercept_keys_authenticated_router
+from intercept_keys import find_openrouter_key_by_intercept_key
 from provider_keys import router as provider_keys_router
 from completion_pairs import router as completion_pairs_router
 from config import settings
@@ -52,8 +54,9 @@ app.add_middleware(
    secret_key=settings.session_secret_key,
 )
 
-app.include_router(auth_router)  # Include the auth router
-app.include_router(intercept_keys_router)
+app.include_router(auth_router)  
+app.include_router(intercept_keys_public_router)
+app.include_router(intercept_keys_authenticated_router)
 app.include_router(provider_keys_router)
 app.include_router(completion_pairs_router)
 

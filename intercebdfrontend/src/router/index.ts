@@ -6,12 +6,12 @@ import GuestRedirect from '../views/GuestRedirect.vue';
 
 const routes = [
   {
-    path: '/',
+    path: '/login',
     name: 'home',
     component: Home
   },
   {
-    path: '/guest',
+    path: '/',
     name: 'guest-redirect',
     component: GuestRedirect
   },

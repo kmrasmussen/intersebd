@@ -39,16 +39,9 @@ app = FastAPI(title="intercebd-backend", version="0.1.0")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-origins = [
-    "*",  # Allows all origins - BE CAREFUL IN PRODUCTION!
-    # Add your specific frontend origin(s) here for production, e.g.:
-    "http://localhost:5173/",
-    # "https://yourfrontenddomain.com",
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=[settings.frontend_base_url],
     allow_credentials=True,
     allow_methods=["*"],  # Allows all methods (GET, POST, PUT, DELETE, etc.)
     allow_headers=["*"],  # Allows all headers

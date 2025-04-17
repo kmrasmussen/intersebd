@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, computed, reactive } from 'vue';
 import { useRoute } from 'vue-router';
 import { useCompletionPairs } from '../useCompletionPairs';
 import { useExampleLlmCall } from '../useExampleLlmCall';
 import { useClipboard } from '../useClipboard';
 import { useAnnotation } from '../useAnnotation'; // Import the new composable
+import { useCompletionAlternatives } from '../useCompletionAlternatives';
 import { API_BASE_URL } from '../config';
 
 const route = useRoute();
@@ -14,6 +15,8 @@ const viewingId = route.params.viewingId as string;
 const prompt = ref('What is 2+12?'); // Reactive prompt variable
 const selectedExample = ref<'curl' | 'python' | 'javascript'>('python'); // Default to python
 
+const alternativeInputs = reactive<Record<string, string>>({});
+
 // --- Composables ---
 const { pairs, interceptKey, isLoading, error: pairsError, startPolling } = useCompletionPairs(viewingId);
 // Pass the prompt ref to the composable
@@ -21,6 +24,14 @@ const { exampleCallResult, exampleCallError, isCallingExample, makeExampleCall }
 const { copiedCurl, copiedPython, copiedJs, handleCopyClick } = useClipboard();
 // Use the annotation composable
 const { annotationLoading, annotationError, annotationSuccess, annotateRewardOne } = useAnnotation(interceptKey);
+const {
+  fetchedAlternatives, // New state for fetched data
+  submitAlternative,
+  fetchAlternatives, // New function
+  clearSubmissionStatus,
+  getSubmissionState, // Existing helper
+  getFetchingState,   // New helper
+} = useCompletionAlternatives(interceptKey);
 
 // --- Computed properties for code strings (updated to use prompt.value) ---
 const curlCodeString = computed(() => {
@@ -96,6 +107,21 @@ try {
 }`;
 });
 // --- End Computed properties ---
+
+const handleAlternativeSubmit = async (requestId: string) => {
+  const content = alternativeInputs[requestId];
+  if (content?.trim()) { // Check trim here too
+    await submitAlternative(requestId, content);
+    // Optionally clear input after successful submission, or leave it
+    if (getSubmissionState(requestId).success) {
+       alternativeInputs[requestId] = ''; // Clear input on success
+    }
+  }
+}
+
+const onAlternativeInputChange = (requestId: string) => {
+  clearSubmissionStatus(requestId); // Clear submission status on input change
+}
 
 onMounted(() => {
   if (viewingId) {
@@ -206,6 +232,61 @@ onMounted(() => {
              <span v-if="annotationSuccess[pair.response.id]" style="color: green; margin-left: 10px;">✓ Annotated!</span>
              <span v-if="annotationError[pair.response.id]" style="color: red; margin-left: 10px;">{{ annotationError[pair.response.id] }}</span>
            </div>
+
+            <!-- *** START: Alternatives Section *** -->
+            <div class="alternatives-section">
+             <h5>Alternatives:</h5>
+             <!-- Button to trigger fetching -->
+             <button
+               @click="fetchAlternatives(pair.request.id)"
+               :disabled="getFetchingState(pair.request.id).loading || !interceptKey"
+               class="fetch-alternatives-btn"
+             >
+               {{ getFetchingState(pair.request.id).loading ? 'Loading Alternatives...' : 'Show/Refresh Alternatives' }}
+             </button>
+             <span v-if="getFetchingState(pair.request.id).error" style="color: red; margin-left: 10px;">
+               Error loading alternatives: {{ getFetchingState(pair.request.id).error }}
+             </span>
+
+             <!-- Display fetched alternatives -->
+             <div v-if="fetchedAlternatives[pair.request.id] && fetchedAlternatives[pair.request.id].length > 0" class="alternatives-list">
+                <ul>
+                  <li v-for="alt in fetchedAlternatives[pair.request.id]" :key="alt.id">
+                    <pre><code>{{ alt.alternative_content }}</code></pre>
+                    <small>Submitted: {{ new Date(alt.created_at).toLocaleString() }}</small>
+                    <!-- Add rater_id display if needed -->
+                    <!-- <small v-if="alt.rater_id"> | Rater: {{ alt.rater_id }}</small> -->
+                  </li>
+                </ul>
+             </div>
+             <p v-else-if="!getFetchingState(pair.request.id).loading && fetchedAlternatives[pair.request.id]?.length === 0">
+               <i>No alternatives submitted yet (or click button above to load).</i>
+             </p>
+
+             <!-- Submission Area -->
+             <div class="alternative-submission">
+               <h6>Submit New Alternative:</h6>
+               <textarea
+                 v-model="alternativeInputs[pair.request.id]"
+                 @input="onAlternativeInputChange(pair.request.id)"
+                 placeholder="Enter a better completion here..."
+                 rows="3"
+                 :disabled="!interceptKey"
+               ></textarea>
+               <button
+                 @click="handleAlternativeSubmit(pair.request.id)"
+                 :disabled="getSubmissionState(pair.request.id).loading || !alternativeInputs[pair.request.id]?.trim() || !interceptKey"
+               >
+                 {{ getSubmissionState(pair.request.id).loading ? 'Submitting...' : 'Submit New Alternative' }}
+               </button>
+               <!-- Display submission status -->
+               <span v-if="getSubmissionState(pair.request.id).success" style="color: green; margin-left: 10px;">✓ Submitted!</span>
+               <span v-if="getSubmissionState(pair.request.id).error" style="color: red; margin-left: 10px;">Error: {{ getSubmissionState(pair.request.id).error }}</span>
+             </div>
+           </div>
+           <!-- *** END: Alternatives Section *** -->
+
+          
            <hr v-if="index < pairs.length - 1">
         </div>
       </div>

@@ -7,7 +7,7 @@ from sqlalchemy import ForeignKey
 from sqlalchemy import Text
 # UUID
 from sqlalchemy.dialects.postgresql import UUID
-
+from sqlalchemy import UniqueConstraint
 from database import Base
 
 class InterceptKey(Base):
@@ -36,6 +36,22 @@ class RequestsLog(Base):
 
     completion_request = relationship("CompletionsRequest", back_populates="request_log", uselist=False)
     key_info = relationship("InterceptKey")
+
+class CompletionAlternative(Base):
+    __tablename__ = "completion_alternatives"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    original_completion_request_id = Column(PG_UUID(as_uuid=True), ForeignKey("completions_requests.id"))
+    intercept_key = Column(String(200), ForeignKey("intercept_keys.intercept_key"), index=True) # Changed type
+    alternative_content = Column(Text, nullable=False)  # The alternative content
+    rater_id = Column(String, nullable=True, index=True)  # The ID of the rater who provided the alternative
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    original_completion_request = relationship("CompletionsRequest", back_populates="alternatives", uselist=False)
+    submitted_via_intercept_key = relationship("InterceptKey")
+
+    __table_args__ = (UniqueConstraint("original_completion_request_id", "alternative_content", name='uq_alternative_content_per_request'),)
+
 class CompletionsRequest(Base):
     __tablename__ = "completions_requests"
 
@@ -49,6 +65,12 @@ class CompletionsRequest(Base):
     response_format_hash = Column(String)
 
     request_log = relationship("RequestsLog", back_populates="completion_request", uselist=False)
+
+    alternatives = relationship(
+        "CompletionAlternative",
+        back_populates="original_completion_request",
+        cascade="all, delete-orphan" # Optional: defines behavior when a CompletionsRequest is deleted
+    )
 
     completion_response = relationship("CompletionResponse", back_populates="completion_request", uselist=False)
     key_info = relationship("InterceptKey")

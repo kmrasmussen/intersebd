@@ -26,6 +26,7 @@ from intercept_keys import authenticated_router as intercept_keys_authenticated_
 from intercept_keys import find_openrouter_key_by_intercept_key
 from provider_keys import router as provider_keys_router
 from completion_pairs import router as completion_pairs_router
+from completion_alternatives import router as completion_alternatives_router
 from config import settings
 import logging
 
@@ -59,6 +60,7 @@ app.include_router(intercept_keys_public_router)
 app.include_router(intercept_keys_authenticated_router)
 app.include_router(provider_keys_router)
 app.include_router(completion_pairs_router)
+app.include_router(completion_alternatives_router)
 
 # Directory to store request logs
 LOGS_DIR = "request_logs"

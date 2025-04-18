@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select, text # Import text for potential raw SQL needs if array_agg index fails
 from fastapi.middleware.cors import CORSMiddleware # Import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
+from fastapi.staticfiles import StaticFiles # Import StaticFiles
 
 # imports from solution
 from auth import router as auth_router
@@ -75,6 +76,9 @@ app.include_router(agent_widget_router) # Include the new router
 
 app.mount("/api/cors-anywhere", cors_anywhere_app)
 
+# Mount Static Files
+static_dir = os.path.join(os.path.dirname(__file__), "statically_served")
+app.mount("/static", StaticFiles(directory=static_dir), name="static_files")
 
 # Directory to store request logs
 LOGS_DIR = "request_logs"

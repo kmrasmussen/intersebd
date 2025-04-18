@@ -1,0 +1,41 @@
+.brainy-widget-button {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  width: 50px;
+  height: 50px;
+  font-size: 24px;
+  padding: 0;
+  border: 1px solid #ccc; /* Add a light border for visibility */
+  border-radius: 50%;
+  background-color: #f0f0f0; /* Neutral light grey background */
+  color: #333; /* Darker color for emoji on light background */
+  cursor: pointer;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.15); /* Softer shadow */
+  z-index: 1000;
+
+  /* Centering content */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  /* Prevent text selection */
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+
+  /* Add transition for smooth hover effect */
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+/* Add the emoji using a pseudo-element */
+.brainy-widget-button::before {
+  content: '🧠'; /* Sparkles emoji */
+}
+
+/* Optional: Change style on hover */
+.brainy-widget-button:hover {
+  background-color: #e0e0e0; /* Slightly darker grey on hover */
+  border-color: #aaa; /* Slightly darker border on hover */
+}

@@ -90,4 +90,30 @@ function tool_get_weather(args) {
 }
 window.tool_get_weather = tool_get_weather;
 
+/**
+ * OPTIONAL: Custom handler for displaying the assistant's final text response.
+ * If this function exists (uncommented and assigned to window), widget.js will call it.
+ * Otherwise, widget.js will use a default alert().
+ * @param {string} messageText - The text content from the assistant's message.
+ */
+function handleAssistantResponse(messageText) {
+  console.log("ADAPTER: handleAssistantResponse received:", messageText);
+
+  // Example: Append the message to a specific div on the page
+  // const chatArea = document.getElementById('chatOutputArea'); // Assuming you have such an element
+  // if (chatArea) {
+  //   const messageElement = document.createElement('p');
+  //   messageElement.textContent = "Assistant: " + messageText;
+  //   chatArea.appendChild(messageElement);
+  //   chatArea.scrollTop = chatArea.scrollHeight; // Scroll to bottom
+  // } else {
+  //   // Fallback if the target element doesn't exist
+  //   alert("Assistant: " + messageText);
+  // }
+
+  // Or just use alert as a starting point:
+  alert("Assistant says: " + messageText);
+}
+window.handleAssistantResponse = handleAssistantResponse;
+
 console.log("Widget Adapter loaded.");

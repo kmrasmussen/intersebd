@@ -1,17 +1,29 @@
-<h1>My Items</h1>
-<div>
-    <input type="text" id="nameInput" placeholder="Item Name">
-    <input type="text" id="contentInput" placeholder="Item Content">
-    <button id="addButton">Add Item Manually</button>
-</div>
-<ul id="itemList">
-    <!-- Items will be added here -->
-</ul>
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Item List</title>
+    <link rel="stylesheet" href="brainy_widget_styling.css">
+</head>
+<body>
+    <h1>My Items</h1>
+    <div>
+        <input type="text" id="nameInput" placeholder="Item Name">
+        <input type="text" id="contentInput" placeholder="Item Content">
+        <button id="addButton">Add Item Manually</button>
+    </div>
+    <ul id="itemList">
+        <!-- Items will be added here -->
+    </ul>
 
-<!-- Load application logic first -->
-<script src="index.js"></script>
-<!-- Load the adapter that connects widget tools to application logic -->
-<script src="widget_adapter.js"></script>
-<!-- Load the core widget logic last -->
-<script src="widget.js"></script>
-<script src="add_little_widget.js"></script>
+    <!-- Load application logic first -->
+    <script src="index.js"></script>
+
+    <!-- Load the adapter that connects widget tools to application logic -->
+    <script src="brainy_widget_adapter.js"></script>
+    <!-- Load the core widget logic -->
+    <script src="brainy_widget_functionality.js"></script>
+    <!-- Load the script that adds the floating widget button -->
+    <script src="add_visible_brainy_widget.js"></script>
+</body>
+</html>

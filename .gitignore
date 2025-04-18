@@ -2,3 +2,6 @@ __pycache__/
 request_logs/
 .env
 */.env*.development
+
+# Node modules
+node_modules/

@@ -57,7 +57,7 @@ logger.info(f"Adding EnforceStrictCORSPostMiddleware for strict origins: {[setti
 app.add_middleware(
     EnforceStrictCORSPostMiddleware,
     strict_origins=[settings.frontend_base_url], # Pass the STRICT list here
-    public_path_prefix="/cors-anywhere" # The path prefix for the permissive sub-app
+    public_path_prefix="/api/cors-anywhere" # The path prefix for the permissive sub-app
 )
 
 app.add_middleware(
@@ -73,7 +73,7 @@ app.include_router(completion_pairs_router)
 app.include_router(completion_alternatives_router)
 app.include_router(agent_widget_router) # Include the new router
 
-app.mount("/cors-anywhere", cors_anywhere_app)
+app.mount("/api/cors-anywhere", cors_anywhere_app)
 
 
 # Directory to store request logs

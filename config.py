@@ -14,7 +14,9 @@ class Settings(BaseSettings):
     openrouter_provisioning_api_key: str
     openrouter_provisioning_api_base_url: str
     openrouter_provisioning_api_guest_limit: float
-
+    openai_api_key: str
+    openai_api_url: str
+    
     class Config:
         env_file = '.env'
         env_file_encoding = 'utf-8'

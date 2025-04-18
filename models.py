@@ -136,3 +136,14 @@ class OpenRouterGuestKey(Base):
     or_usage = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
     user_id = Column(String, nullable=True)  # Optional user ID
+
+class AgentWidget(Base):
+    __tablename__ = "agent_widgets"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cors_origin = Column(String, nullable=False)
+    tools = Column(JSON, nullable=False)
+    user_id = Column(String, nullable=True)  # Optional user ID
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    n_calls = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)

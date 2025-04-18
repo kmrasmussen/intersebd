@@ -27,6 +27,8 @@ from intercept_keys import find_openrouter_key_by_intercept_key
 from provider_keys import router as provider_keys_router
 from completion_pairs import router as completion_pairs_router
 from completion_alternatives import router as completion_alternatives_router
+from agent_widget import router as agent_widget_router # Import the new router
+from corsanywhere import cors_anywhere_app # Import the CORS Anywhere app
 from config import settings
 import logging
 
@@ -44,10 +46,18 @@ logger = logging.getLogger(__name__)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_base_url],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],  # Allows all methods (GET, POST, PUT, DELETE, etc.)
     allow_headers=["*"],  # Allows all headers
+)
+
+from middleware import EnforceStrictCORSPostMiddleware
+logger.info(f"Adding EnforceStrictCORSPostMiddleware for strict origins: {[settings.frontend_base_url]}")
+app.add_middleware(
+    EnforceStrictCORSPostMiddleware,
+    strict_origins=[settings.frontend_base_url], # Pass the STRICT list here
+    public_path_prefix="/cors-anywhere" # The path prefix for the permissive sub-app
 )
 
 app.add_middleware(
@@ -61,6 +71,10 @@ app.include_router(intercept_keys_authenticated_router)
 app.include_router(provider_keys_router)
 app.include_router(completion_pairs_router)
 app.include_router(completion_alternatives_router)
+app.include_router(agent_widget_router) # Include the new router
+
+app.mount("/cors-anywhere", cors_anywhere_app)
+
 
 # Directory to store request logs
 LOGS_DIR = "request_logs"

@@ -1,28 +1,30 @@
 import os
 import json
-import httpx # Import httpx for async requests
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Response # Added Request, Response
-from pydantic import BaseModel, HttpUrl, Field # Added Field
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
+from fastapi.responses import PlainTextResponse  # Import PlainTextResponse
+from pydantic import BaseModel, HttpUrl, Field
 from typing import Optional, List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select # Import select for querying
+from sqlalchemy.future import select
 import logging
 import uuid
 
 from database import get_db
 from models import AgentWidget
-from config import settings
-# Assuming you might want to associate widgets with authenticated users eventually
-# from auth import get_current_user, UserInfo
+from config import settings  # Make sure settings are imported
 
 logger = logging.getLogger(__name__)
+
+# --- Constants ---
+WIDGET_JS_TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), 'widget', 'companya', 'brainy_widget_functionality.js')
 
 # --- Request and Response Models ---
 
 class NewWidgetRequest(BaseModel):
-    user_id: Optional[str] = None # Optional for now, could be linked to auth later
-    origin: str # The allowed CORS origin for this widget
-    tools: List[Dict[str, Any]] # Define the structure of tools more specifically if needed
+    user_id: Optional[str] = None
+    origin: str
+    tools: List[Dict[str, Any]]
 
 class NewWidgetResponse(BaseModel):
     widget_id: uuid.UUID
@@ -32,31 +34,23 @@ class NewWidgetResponse(BaseModel):
     message: str
 
     class Config:
-        from_attributes = True # Use from_attributes instead of orm_mode in Pydantic v2
+        from_attributes = True
 
-# --- New Request Model for agent_widget_request ---
 class AgentWidgetRequestPayload(BaseModel):
     widget_id: uuid.UUID
     previous_response_id: Optional[str] = None
-    input: List[Dict[str, Any]] # Expecting OpenAI input format e.g. [{"role": "user", "content": "..."}]
-    model: str = Field(default="gpt-4.1-nano", description="Optional: Specify the OpenAI model to use") # Allow overriding model
+    input: List[Dict[str, Any]]
+    model: str = Field(default="gpt-4.1-nano", description="Optional: Specify the OpenAI model to use")
 
 # --- Router Definition ---
-
 router = APIRouter(
-    prefix='/agent-widgets',
+    prefix='/api/agent-widgets',
     tags=["Agent Widgets"],
-    # dependencies=[Depends(get_current_user)] # Uncomment if authentication is required
 )
 
 # --- OpenAI Client Setup ---
-# It's better to initialize the client once if possible, or create it per request
-# For simplicity here, we'll create it inside the request function
-
-
 if not settings.openai_api_key:
     logger.warning("OPENAI_API_KEY environment variable not set. /agent_widget_request endpoint will fail.")
-    # You might want to raise an error at startup instead, depending on your deployment strategy
 
 # --- API Endpoints ---
 
@@ -65,26 +59,21 @@ if not settings.openai_api_key:
              status_code=status.HTTP_201_CREATED)
 async def create_new_widget(
     widget_data: NewWidgetRequest,
-    # current_user: UserInfo = Depends(get_current_user), # Uncomment if using auth
     session: AsyncSession = Depends(get_db)
 ):
-    """
-    Creates a new Agent Widget configuration.
-    """
-    # user_id = current_user.sub # Use authenticated user ID if auth is enabled
-    user_id = widget_data.user_id # Or take from request body
+    user_id = widget_data.user_id
 
     new_widget = AgentWidget(
         user_id=user_id,
         cors_origin=widget_data.origin,
         tools=widget_data.tools,
-        is_active=True # Default to active
+        is_active=True
     )
 
     try:
         session.add(new_widget)
         await session.commit()
-        await session.refresh(new_widget) # To get the generated ID and defaults
+        await session.refresh(new_widget)
         logger.info(f"Created new Agent Widget with ID: {new_widget.id} for origin: {new_widget.cors_origin}")
     except Exception as e:
         await session.rollback()
@@ -102,24 +91,48 @@ async def create_new_widget(
         message="Agent Widget created successfully."
     )
 
-# --- New Endpoint ---
-@router.post('/agent_widget_request')
+@router.get('/{widget_id}/widget.js',
+            response_class=PlainTextResponse)
+async def get_widget_script(widget_id: uuid.UUID, session: AsyncSession = Depends(get_db)):
+    """
+    Serves the brainy_widget_functionality.js script with the
+    correct WIDGET_ID and API_ENDPOINT injected.
+    """
+    stmt = select(AgentWidget.id).where(AgentWidget.id == widget_id)
+    result = await session.execute(stmt)
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Widget not found")
+
+    try:
+        with open(WIDGET_JS_TEMPLATE_PATH, 'r') as f:
+            template_content = f.read()
+    except FileNotFoundError:
+        logger.error(f"Widget JS template not found at: {WIDGET_JS_TEMPLATE_PATH}")
+        raise HTTPException(status_code=500, detail="Widget script template missing")
+
+    # --- Construct the dynamic API endpoint URL ---
+    api_path = "/api/cors-anywhere/agent_widget_request"
+    full_api_endpoint = f"{settings.backend_base_url.rstrip('/')}{api_path}"
+    logger.debug(f"Injecting API Endpoint: {full_api_endpoint}")
+
+    # Replace placeholders
+    script_content = template_content.replace("__WIDGET_ID_PLACEHOLDER__", str(widget_id))
+    script_content = script_content.replace("__API_ENDPOINT_PLACEHOLDER__", full_api_endpoint)
+
+    # Return as JavaScript
+    return PlainTextResponse(content=script_content, media_type="application/javascript")
+
+@router.post('/cors-anywhere/agent_widget_request')
 async def agent_widget_request(
     payload: AgentWidgetRequestPayload,
     session: AsyncSession = Depends(get_db)
-    # request: Request # Inject FastAPI Request object if you need headers etc. from incoming req
 ):
-    """
-    Receives a request for a specific widget, fetches its configuration,
-    calls the OpenAI Responses API, and forwards the response.
-    """
     if not settings.openai_api_key:
          raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="OpenAI API key is not configured on the server."
         )
 
-    # 1. Fetch the widget configuration
     stmt = select(AgentWidget).where(AgentWidget.id == payload.widget_id, AgentWidget.is_active == True)
     result = await session.execute(stmt)
     widget = result.scalar_one_or_none()
@@ -131,11 +144,10 @@ async def agent_widget_request(
             detail=f"Agent Widget with ID {payload.widget_id} not found or is inactive."
         )
 
-    # 2. Prepare OpenAI request payload
     openai_payload = {
-        "model": payload.model, # Use model from request, defaults to nano
+        "model": payload.model,
         "input": payload.input,
-        "tools": widget.tools # Use tools from the specific widget config
+        "tools": widget.tools
     }
     if payload.previous_response_id:
         openai_payload["previous_response_id"] = payload.previous_response_id
@@ -145,7 +157,6 @@ async def agent_widget_request(
         "Authorization": f"Bearer {settings.openai_api_key}"
     }
 
-    # 3. Make the async request to OpenAI
     async with httpx.AsyncClient() as client:
         try:
             logger.debug(f"Calling OpenAI Responses API for widget {widget.id}. Payload: {openai_payload}")
@@ -153,10 +164,8 @@ async def agent_widget_request(
                 settings.openai_api_url,
                 headers=headers,
                 json=openai_payload,
-                timeout=60.0 # Set a reasonable timeout
+                timeout=60.0
             )
-            # Ensure the response content is read before closing the client context
-            # This is important for forwarding the response body correctly
             await openai_response.aread()
 
         except httpx.RequestError as e:
@@ -165,19 +174,15 @@ async def agent_widget_request(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"Could not connect to OpenAI API: {e}"
             )
-        except Exception as e: # Catch other potential errors
+        except Exception as e:
              logger.error(f"Unexpected error during OpenAI call for widget {widget.id}: {e}", exc_info=True)
              raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="An unexpected error occurred while processing the request."
             )
 
-    # 4. Forward the OpenAI response (status, headers, body)
-    # Be selective about which headers to forward if necessary,
-    # but forwarding content-type is usually important.
     response_headers = {
         "Content-Type": openai_response.headers.get("Content-Type", "application/json")
-        # Add any other headers from openai_response you want to forward
     }
 
     return Response(
@@ -185,6 +190,3 @@ async def agent_widget_request(
         status_code=openai_response.status_code,
         headers=response_headers
     )
-
-
-# You can add more endpoints here later (e.g., get, update, delete widgets)

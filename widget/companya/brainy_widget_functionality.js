@@ -1,6 +1,12 @@
-const WIDGET_ID = "9db28cfe-77a4-496a-af35-5342ce9a6004"; // Make sure this is the correct ID for the 'null' origin widget
-const API_ENDPOINT = 'http://localhost:9003/cors-anywhere/agent_widget_request'; // Use the mounted path from main.py
-let PREVIOUS_RESPONSE_ID = null; // Stores the ID of the *last successful response*
+const WIDGET_ID = "__WIDGET_ID_PLACEHOLDER__";
+const API_ENDPOINT = "__API_ENDPOINT_PLACEHOLDER__";
+const SESSION_STORAGE_KEY = 'brainyWidget_previousResponseId'; // Key for sessionStorage
+
+// --- Initialize PREVIOUS_RESPONSE_ID from sessionStorage ---
+let PREVIOUS_RESPONSE_ID = sessionStorage.getItem(SESSION_STORAGE_KEY) || null;
+if (PREVIOUS_RESPONSE_ID) {
+    console.log(`WIDGET: Initialized PREVIOUS_RESPONSE_ID from sessionStorage: ${PREVIOUS_RESPONSE_ID}`);
+}
 
 // Add more tool functions here as needed
 
@@ -113,6 +119,7 @@ async function sendMessage(inputContent, explicitPreviousResponseId = null) {
         model: "gpt-4.1-nano" // Optional: Add if you want to specify the model
     };
 
+    // --- Use explicit ID if provided, otherwise use the global/session one ---
     const prevIdToSend = explicitPreviousResponseId || PREVIOUS_RESPONSE_ID;
 
     if (prevIdToSend) {
@@ -143,21 +150,36 @@ async function sendMessage(inputContent, explicitPreviousResponseId = null) {
         console.log("WIDGET: API Response:", data);
 
         if (data && data.id) {
+            // --- Update global variable AND sessionStorage ---
             PREVIOUS_RESPONSE_ID = data.id;
-            console.log(`Updated global PREVIOUS_RESPONSE_ID to: ${PREVIOUS_RESPONSE_ID}`);
+            sessionStorage.setItem(SESSION_STORAGE_KEY, PREVIOUS_RESPONSE_ID);
+            console.log(`Updated PREVIOUS_RESPONSE_ID to: ${PREVIOUS_RESPONSE_ID} (and saved to sessionStorage)`);
         } else {
-             console.warn("Response did not contain an 'id'. Global PREVIOUS_RESPONSE_ID not updated.");
+             console.warn("Response did not contain an 'id'. PREVIOUS_RESPONSE_ID not updated.");
+             // --- Consider clearing sessionStorage if the conversation breaks ---
+             // sessionStorage.removeItem(SESSION_STORAGE_KEY);
+             // PREVIOUS_RESPONSE_ID = null;
         }
 
         await handleResponse(data);
 
     } catch (error) {
         console.error('WIDGET: Error sending message/tool outputs:', error);
+        // --- Consider clearing sessionStorage on major errors ---
+        // sessionStorage.removeItem(SESSION_STORAGE_KEY);
+        // PREVIOUS_RESPONSE_ID = null;
     }
 }
 
 // --- Global Access ---
 window.sendMessage = sendMessage;
+
+// --- Function to clear conversation state ---
+window.clearWidgetConversation = function() {
+    console.log("WIDGET: Clearing conversation state (PREVIOUS_RESPONSE_ID and sessionStorage).");
+    PREVIOUS_RESPONSE_ID = null;
+    sessionStorage.removeItem(SESSION_STORAGE_KEY);
+};
 
 console.log("Core Widget logic loaded.");
 

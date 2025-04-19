@@ -7,6 +7,7 @@ import { useClipboard } from '../useClipboard';
 import { useAnnotation } from '../useAnnotation'; // Import the new composable
 import { useCompletionAlternatives } from '../useCompletionAlternatives';
 import { API_BASE_URL } from '../config';
+import AnnotatableItemDisplay from '../components/AnnotatableItemDisplay.vue';
 
 const route = useRoute();
 const viewingId = route.params.viewingId as string;
@@ -23,7 +24,14 @@ const { pairs, interceptKey, isLoading, error: pairsError, startPolling } = useC
 const { exampleCallResult, exampleCallError, isCallingExample, makeExampleCall } = useExampleLlmCall(interceptKey, prompt);
 const { copiedCurl, copiedPython, copiedJs, handleCopyClick } = useClipboard();
 // Use the annotation composable
-const { annotationLoading, annotationError, annotationSuccess, annotateRewardOne } = useAnnotation(interceptKey);
+const {
+  createAnnotationLoading, // <-- Corrected name
+  createAnnotationError,   // <-- Corrected name
+  createAnnotationSuccess, // <-- Corrected name
+  annotateRewardOne
+  // We don't need the fetch-related parts here directly
+} = useAnnotation(interceptKey);
+
 const {
   fetchedAlternatives, // New state for fetched data
   submitAlternative,
@@ -223,23 +231,33 @@ onMounted(() => {
            <pre v-if="pair.response"><code>{{ JSON.stringify(pair.response, null, 2) }}</code></pre>
            <p v-else><i>(No response yet)</i></p>
 
-           <!-- *** START: Modified Annotation Controls *** -->
+           <!-- *** START: Existing Annotation Controls (Keep for now) *** -->
            <div v-if="pair.response" class="annotation-controls">
              <div v-if="pair.response.annotation_target_id">
                <button
                  @click="annotateRewardOne(pair.response.id, pair.response.annotation_target_id)"
-                 :disabled="annotationLoading[pair.response.id] || !interceptKey || !pair.response.annotation_target_id"
+                 :disabled="createAnnotationLoading[pair.response.id] || !interceptKey || !pair.response.annotation_target_id"
                >
-                 {{ annotationLoading[pair.response.id] ? 'Annotating...' : 'Annotate with reward 1' }}
+                 {{ createAnnotationLoading[pair.response.id] ? 'Annotating...' : 'Annotate with reward 1 (Old Button)' }}
                </button>
-               <span v-if="annotationSuccess[pair.response.id]" style="color: green; margin-left: 10px;">✓ Annotated!</span>
-               <span v-if="annotationError[pair.response.id]" style="color: red; margin-left: 10px;">{{ annotationError[pair.response.id] }}</span>
+               <span v-if="createAnnotationSuccess[pair.response.id]" style="color: green; margin-left: 10px;">✓ Annotated!</span>
+               <span v-if="createAnnotationError[pair.response.id]" style="color: red; margin-left: 10px;">{{ createAnnotationError[pair.response.id] }}</span>
              </div>
-             <div v-else> <!-- Handles case where response exists but target_id doesn't -->
+             <div v-else>
                <span style="color: orange; font-style: italic;">Annotation target ID missing. Cannot annotate.</span>
              </div>
            </div>
-           <!-- *** END: Modified Annotation Controls *** -->
+           <!-- *** END: Existing Annotation Controls *** -->
+
+           <!-- *** START: Add New Component for Main Response *** -->
+           <AnnotatableItemDisplay
+             v-if="pair.response && pair.response.annotation_target_id"
+             :item="{ ...pair.response, kind: 'response' }"
+             :annotationTargetId="pair.response.annotation_target_id"
+             :interceptKey="interceptKey"
+           />
+           <!-- *** END: Add New Component for Main Response *** -->
+
 
             <!-- Alternatives Section -->
             <div class="alternatives-section">
@@ -260,10 +278,18 @@ onMounted(() => {
              <div v-if="fetchedAlternatives[pair.request.id] && fetchedAlternatives[pair.request.id].length > 0" class="alternatives-list">
                 <ul>
                   <li v-for="alt in fetchedAlternatives[pair.request.id]" :key="alt.id">
-                    <pre><code>{{ alt.alternative_content }}</code></pre>
-                    <small>Submitted: {{ new Date(alt.created_at).toLocaleString() }}</small>
-                    <!-- Add rater_id display if needed -->
-                    <!-- <small v-if="alt.rater_id"> | Rater: {{ alt.rater_id }}</small> -->
+                   
+                    <AnnotatableItemDisplay
+                      v-if="alt.annotation_target_id"
+                      :item="{ ...alt, annotation_target_id: alt.annotation_target_id, kind: 'alternative' }"
+                      :annotationTargetId="alt.annotation_target_id"
+                      :interceptKey="interceptKey"
+                    />
+                     <div v-else>
+                       <span style="color: orange; font-style: italic;">Alt Annotation target ID missing.</span>
+                     </div>
+                    <!-- *** END: Add New Component for Alternative *** -->
+
                   </li>
                 </ul>
              </div>

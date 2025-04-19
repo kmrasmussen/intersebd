@@ -37,7 +37,9 @@ class AnnotationCreateSchema(BaseModel):
     reward: Optional[float] = None
     annotation_metadata: Optional[Dict[str, Any]] = None
 
-# ... (imports and schemas from above) ...
+class GetAnnotationsByTargetSchema(BaseModel):
+    annotation_target_id: uuid.UUID
+    intercept_key: str
 
 # --- Router Definition ---
 router = APIRouter(
@@ -94,11 +96,6 @@ async def get_annotations_for_completion_response_post( # Renamed function sligh
     # Pydantic will automatically convert CompletionAnnotation objects
     # to AnnotationResponseSchema thanks to orm_mode=True
     return response.annotation_target.annotations
-# ... (imports, schemas, router setup) ...
-
-# --- Endpoint Implementation ---
-
-# ... (existing GET endpoint) ...
 
 @router.post(
     "/",
@@ -182,3 +179,65 @@ async def create_annotation(
 
     # 6. Return the created annotation data
     return new_annotation
+
+@router.post( # Using POST to keep key out of URL/query
+    "/target/list",
+    response_model=List[AnnotationResponseSchema],
+    summary="Get annotations for a specific annotation target ID"
+)
+async def get_annotations_for_target(
+    request_data: GetAnnotationsByTargetSchema,
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    Retrieves all annotations associated with a given AnnotationTarget ID,
+    verifying ownership via the intercept key associated with the target's
+    original request or alternative.
+    """
+    target_id = request_data.annotation_target_id
+    provided_intercept_key = request_data.intercept_key
+
+    # 1. Find the AnnotationTarget and its linked source for key verification
+    stmt = (
+        select(AnnotationTarget)
+        .where(AnnotationTarget.id == target_id)
+        .options(
+            selectinload(AnnotationTarget.completion_response)
+            .selectinload(CompletionResponse.completion_request), # For key check
+            selectinload(AnnotationTarget.completion_alternative), # For key check
+            selectinload(AnnotationTarget.annotations) # Eager load the annotations
+        )
+    )
+    result = await session.execute(stmt)
+    target = result.scalar_one_or_none()
+
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="AnnotationTarget not found"
+        )
+
+    # 2. Determine the associated intercept key and verify
+    associated_intercept_key: Optional[str] = None
+    if target.completion_response and target.completion_response.completion_request:
+        associated_intercept_key = target.completion_response.completion_request.intercept_key
+    elif target.completion_alternative:
+        associated_intercept_key = target.completion_alternative.intercept_key
+    else:
+        # Should not happen with data integrity
+        logger.error(f"AnnotationTarget {target_id} has no associated response or alternative.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Cannot verify ownership: AnnotationTarget is orphaned."
+        )
+
+    if associated_intercept_key != provided_intercept_key:
+        logger.warning(f"Intercept key mismatch for target {target_id}.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Provided intercept key does not match the target's associated key or access denied."
+        )
+
+    # 3. Return the already loaded annotations
+    logger.info(f"Returning {len(target.annotations)} annotations for target {target_id}")
+    return target.annotations

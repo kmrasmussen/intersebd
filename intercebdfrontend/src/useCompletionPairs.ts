@@ -1,41 +1,8 @@
 import { ref, onUnmounted } from 'vue';
 import axios from 'axios';
 import { API_BASE_URL } from './config';
+import type { CompletionPairDto, CompletionPairListResponseDto } from './types';
 
-interface CompletionsRequestDetailDto {
-  id: string;
-  request_log_id: string;
-  intercept_key: string;
-  messages: any[] | null;
-  model: string | null;
-  response_format: any | null;
-  request_timestamp: string | null;
-}
-
-interface CompletionResponseDetailDto {
-  id: string;
-  completion_request_id: string;
-  annotation_target_id: string | null;
-  provider: string | null;
-  model: string | null;
-  created: number | null;
-  prompt_tokens: number | null;
-  completion_tokens: number | null;
-  total_tokens: number | null;
-  choice_finish_reason: string | null;
-  choice_role: string | null;
-  choice_content: string | null;
-}
-
-interface CompletionPairDto {
-  request: CompletionsRequestDetailDto; // Consider renaming to CompletionsRequestDetailDto for consistency
-  response: CompletionResponseDetailDto | null; // <-- Allow null
-}
-
-interface CompletionPairListResponseDto {
-  pairs: CompletionPairDto[];
-  intercept_key: string | null;
-}
 
 export function useCompletionPairs(viewingId: string) {
   const pairs = ref<CompletionPairDto[]>([]);

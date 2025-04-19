@@ -138,41 +138,35 @@ export function useAnnotation(interceptKey: Ref<string | null>) {
 
   // --- NEW: Function for DELETING an annotation ---
   async function deleteAnnotation(annotationId: string) {
+    console.log(`[useAnnotation/deleteAnnotation] Entered. Annotation ID: ${annotationId}, Intercept Key: ${interceptKey.value}`); // <-- ADD THIS LOG
+
     if (!interceptKey.value) {
-      console.error("Intercept key is missing, cannot delete annotation.");
+      console.error("[useAnnotation/deleteAnnotation] Failed: Intercept key is missing."); // <-- Added context
       deleteAnnotationError.value = { ...deleteAnnotationError.value, [annotationId]: "Intercept key is missing." };
       return false; // Indicate failure
     }
     if (!annotationId) {
-      console.error("Annotation ID is missing, cannot delete annotation.");
+      console.error("[useAnnotation/deleteAnnotation] Failed: Annotation ID is missing."); // <-- Added context
       deleteAnnotationError.value = { ...deleteAnnotationError.value, [annotationId]: "Annotation ID is missing." };
       return false; // Indicate failure
     }
 
-    console.log(`Attempting to delete annotation ${annotationId}`);
+    console.log(`[useAnnotation/deleteAnnotation] Attempting API call to delete annotation ${annotationId}`); // <-- ADD THIS LOG
     deleteAnnotationLoading.value = { ...deleteAnnotationLoading.value, [annotationId]: true };
     deleteAnnotationError.value = { ...deleteAnnotationError.value, [annotationId]: null };
 
     // Construct URL with query parameter for the key
     const url = `${API_BASE_URL}/annotations/${annotationId}?intercept_key=${encodeURIComponent(interceptKey.value)}`;
+    console.log(`[useAnnotation/deleteAnnotation] Request URL: ${url}`); // <-- Log URL
 
     try {
       // Use axios.delete
       await axios.delete(url);
-      console.log(`Successfully deleted annotation ${annotationId}`);
-
-      // --- Optional: Remove the annotation from the local state immediately ---
-      // This provides faster UI feedback but might differ from backend if refresh fails
-      // Object.keys(fetchedAnnotations.value).forEach(targetId => {
-      //   fetchedAnnotations.value[targetId] = fetchedAnnotations.value[targetId].filter(
-      //     ann => ann.id !== annotationId
-      //   );
-      // });
-
+      console.log(`[useAnnotation/deleteAnnotation] Successfully deleted annotation ${annotationId}`); // <-- Added context
       return true; // Indicate success
 
     } catch (error: any) {
-      console.error(`Failed to delete annotation ${annotationId}:`, error);
+      console.error(`[useAnnotation/deleteAnnotation] Failed to delete annotation ${annotationId}:`, error); // <-- Added context
       let errorMessage = "An unknown error occurred during deletion.";
       if (axios.isAxiosError(error)) {
         errorMessage = error.response?.data?.detail || error.message || JSON.stringify(error.response?.data);

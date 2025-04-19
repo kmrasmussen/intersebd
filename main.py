@@ -32,6 +32,7 @@ from agent_widget import router as agent_widget_router # Import the new router
 from corsanywhere import cors_anywhere_app # Import the CORS Anywhere app
 from annotation import router as annotation_router
 from config import settings
+from finetuning import router as finetuning_router
 import logging
 
 # Configure logging
@@ -40,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 # Initialize FastAPI app
-app = FastAPI(title="intercebd-backend", version="0.1.0")
+app = FastAPI(title="intercebd-backend", version="0.1.0",  swagger_ui_parameters={"persistAuthorization": True})
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -86,6 +87,8 @@ app.include_router(completion_pairs_router)
 app.include_router(completion_alternatives_router)
 app.include_router(agent_widget_router) # Include the new router
 app.include_router(annotation_router)
+app.include_router(finetuning_router)
+
 
 app.mount("/api/cors-anywhere", cors_anywhere_app)
 

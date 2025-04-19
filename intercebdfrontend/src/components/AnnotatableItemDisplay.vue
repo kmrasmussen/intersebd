@@ -113,15 +113,22 @@ const toggleCollapse = () => {
 
 // NEW: Method to handle annotation deletion
 const handleDeleteAnnotation = async (annotationId: string) => {
+  console.log(`[handleDeleteAnnotation] Clicked delete for annotation ID: ${annotationId}`); // <-- ADD THIS LOG
+
+  // Optional: Confirm before deleting
+  // if (!confirm(`Are you sure you want to delete annotation ${annotationId}?`)) {
+  //   return;
+  // }
+
   const success = await deleteAnnotation(annotationId);
 
   if (success) {
     // Refresh the list for this item after successful deletion
-    console.log(`Deletion successful for ${annotationId}, refreshing annotations for target ${props.annotationTargetId}`);
+    console.log(`[handleDeleteAnnotation] Deletion successful for ${annotationId}, refreshing annotations for target ${props.annotationTargetId}`);
     fetchAnnotationsForTarget(props.annotationTargetId);
   } else {
     // Error is handled via deleteAnnotationError state
-    console.error(`Deletion failed for ${annotationId}`);
+    console.error(`[handleDeleteAnnotation] Deletion failed for ${annotationId} (check composable logs/state)`); // <-- Added context
   }
 };
 
@@ -193,13 +200,18 @@ const handleDeleteAnnotation = async (annotationId: string) => {
             <small> | At: {{ new Date(annotation.timestamp).toLocaleString() }}</small>
 
             <!-- Modified Delete Button Area -->
-            <span class="delete-control">
+            <span
+              class="delete-control"
+              @click="handleDeleteAnnotation(annotation.id)"
+              :class="{ disabled: deleteAnnotationLoading[annotation.id] }"
+              title="Delete this annotation"
+            >
               <small> | </small>
               <button
-                @click="handleDeleteAnnotation(annotation.id)"
+                tabindex="-1"
                 :disabled="deleteAnnotationLoading[annotation.id]"
                 class="delete-annotation-btn"
-                title="Delete this annotation"
+                aria-hidden="true"
               >
                 {{ deleteAnnotationLoading[annotation.id] ? '...' : 'X' }}
               </button>
@@ -208,7 +220,6 @@ const handleDeleteAnnotation = async (annotationId: string) => {
                 ⚠️ Error
               </span>
             </span>
-
           </li>
         </ul>
         <p v-else-if="!fetchAnnotationsErrorMessage" style="font-style: italic; color: #555;">No annotations found.</p>
@@ -363,43 +374,48 @@ small {
 
 /* NEW: Container for delete controls */
 .delete-control {
-  display: inline-flex; /* Keep items inline */
-  align-items: center; /* Vertically center items */
-  gap: 4px; /* Space between separator, button, text */
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 1px 3px;
+  /* --- TEMPORARY DEBUGGING --- */
+  background-color: rgba(255, 255, 0, 0.5); /* Yellow background */
+  /* --- END TEMPORARY --- */
+}
+.delete-control:hover {
+  background-color: #ffeeee; /* Background on hover for the whole control */
+}
+
+/* Disabled state for the control */
+.delete-control.disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.delete-control.disabled:hover {
+  background-color: transparent; /* No hover effect when disabled */
 }
 
 /* Adjust delete button styles */
 .delete-annotation-btn {
-  padding: 0px 4px; /* Minimal padding */
+  padding: 0px 4px;
   font-size: 0.8em;
   line-height: 1;
-  background-color: transparent; /* Make background transparent */
-  border: 1px solid #ffaaaa; /* Keep border */
+  background-color: transparent;
+  border: 1px solid #ffaaaa;
   color: #c00;
-  cursor: pointer;
   border-radius: 3px;
-  font-weight: bold; /* Make X bold */
-  /* Remove inherited margins */
-  margin-top: 0;
-  margin-right: 0;
-  margin-left: 0; /* Remove auto margin */
-}
-.delete-annotation-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.delete-annotation-btn:hover {
-  background-color: #ffeeee; /* Slight background on hover */
+  font-weight: bold;
+  margin: 0; /* Remove margins */
+  pointer-events: none; /* Prevent button stealing clicks */
 }
 
-/* NEW: Style for the "delete" text */
+/* Style for the "delete" text */
 .delete-text {
   font-size: 0.8em;
-  color: #cc0000; /* Match button color */
-  cursor: pointer; /* Make text look clickable (optional) */
-}
-.delete-text:hover {
-  text-decoration: underline;
+  color: #cc0000;
+  user-select: none; /* Prevent text selection */
 }
 
 .delete-error {

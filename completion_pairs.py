@@ -33,6 +33,7 @@ class CompletionsRequestDetailDto(BaseModel):
 class CompletionResponseDetailDto(BaseModel):
     id: str # This is the OpenAI/Provider ID, which is a string
     completion_request_id: uuid.UUID
+    annotation_target_id: Optional[uuid.UUID] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     created: Optional[int] = None # Unix timestamp

@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import List
 
 from database import get_db
-from models import CompletionAlternative, CompletionsRequest
+from models import CompletionAlternative, CompletionsRequest, AnnotationTarget
 
 logger = logging.getLogger(__name__)
 
@@ -53,15 +53,21 @@ async def create_alternative_completion(
     if original_request.intercept_key != request.intercept_key:
       logger.warning(f"Intercept key mismatch for completion request ID {request.completion_request_id}.")
       raise HTTPException(
-          status_code=status.HTTP_400_BAD_REQUEST,
+          status_code=status.HTTP_403_FORBIDDEN,
           detail="Intercept key does not match the original request."
       )
     
+    new_annotation_target = AnnotationTarget()
+    session.add(new_annotation_target)
+    await session.flush()
+    logger.info(f'Created annotation target with id {new_annotation_target.id} for alternative')
+
     new_alternative = CompletionAlternative(
       original_completion_request_id=request.completion_request_id,
       intercept_key=request.intercept_key,
       alternative_content=request.alternative_content,
-      rater_id=request.rater_id
+      rater_id=request.rater_id,
+      annotation_target_id=new_annotation_target.id
     )
     session.add(new_alternative)
     await session.commit()
@@ -74,10 +80,11 @@ async def create_alternative_completion(
     )
   except HTTPException as e:
     logger.error(f"HTTPException: {e.detail}")
+    await session.rollback()
     raise e
   except Exception as e:
     await session.rollback()
-    logger.error(f"Unexpected error: {str(e)}")
+    logger.exception(f"Unexpected error: {str(e)}", exc_info=True)
     raise HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail="An unexpected error occurred when creating the alternative completion."
@@ -88,6 +95,7 @@ class CompletionAlternativeItem(BaseModel):
     alternative_content: str
     rater_id: str | None
     created_at: datetime
+    annotation_target_id: uuid.UUID # <--- ADD THIS FIELD
 
     class Config:
       from_attributes = True # Enable ORM mode for easy conversion from SQLAlchemy model
@@ -149,6 +157,7 @@ async def list_alternatives_for_request(
             return ListAlternativesResponse(alternatives=[])
 
         logger.info(f"Found {len(alternatives_db)} alternatives for request ID: {request_data.completion_request_id}")
+        # Pydantic automatically maps annotation_target_id due to from_attributes=True
         return ListAlternativesResponse(alternatives=alternatives_db)
 
     except HTTPException as http_exc:

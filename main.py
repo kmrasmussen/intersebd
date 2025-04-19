@@ -30,6 +30,7 @@ from completion_pairs import router as completion_pairs_router
 from completion_alternatives import router as completion_alternatives_router
 from agent_widget import router as agent_widget_router # Import the new router
 from corsanywhere import cors_anywhere_app # Import the CORS Anywhere app
+from annotation import router as annotation_router
 from config import settings
 import logging
 
@@ -45,6 +46,7 @@ app = FastAPI(title="intercebd-backend", version="0.1.0")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+'''
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -52,7 +54,16 @@ app.add_middleware(
     allow_methods=["*"],  # Allows all methods (GET, POST, PUT, DELETE, etc.)
     allow_headers=["*"],  # Allows all headers
 )
+'''
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.frontend_base_url],
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"],  # Allows all headers
+)
 
+'''
 from middleware import EnforceStrictCORSPostMiddleware
 logger.info(f"Adding EnforceStrictCORSPostMiddleware for strict origins: {[settings.frontend_base_url]}")
 app.add_middleware(
@@ -60,6 +71,7 @@ app.add_middleware(
     strict_origins=[settings.frontend_base_url], # Pass the STRICT list here
     public_path_prefix="/api/cors-anywhere" # The path prefix for the permissive sub-app
 )
+'''
 
 app.add_middleware(
    SessionMiddleware,
@@ -73,6 +85,7 @@ app.include_router(provider_keys_router)
 app.include_router(completion_pairs_router)
 app.include_router(completion_alternatives_router)
 app.include_router(agent_widget_router) # Include the new router
+app.include_router(annotation_router)
 
 app.mount("/api/cors-anywhere", cors_anywhere_app)
 
@@ -432,7 +445,7 @@ async def proxy(request: Request, session: AsyncSession = Depends(get_db)):
     #raise HTTPException(status_code=401, detail=f"Test exception with api key and openrouter, {api_key} and or: {matching_openrouter_key.or_key}")
     if not matching_openrouter_key:
         # Handle case where intercept key is valid but no matching OpenRouter key is found
-        raise HTTPException(status_code=401, detail=f"Valid intercept key, but no corresponding OpenRouter key configured: {matching_openrouter_key}")
+        raise HTTPException(status_code=401, detail=f"Problems with getting openrouter guest key: {matching_openrouter_key}")
     # Replace the incoming Authorization header with the found OpenRouter key
     headers["authorization"] = f"Bearer {matching_openrouter_key.or_key}"
     print("Replaced Authorization header with OpenRouter key.")
@@ -513,11 +526,16 @@ async def proxy(request: Request, session: AsyncSession = Depends(get_db)):
                     first_choice = choices[0] # Get first choice or empty dict
                     message = first_choice.get("message", {})
 
+                    new_annotation_target = AnnotationTarget()
+                    session.add(new_annotation_target)
+                    await session.flush() # Flush to get the ID of the new target
+                    print(f'Created annotation target with id {new_annotation_target.id}')
 
                     # Create completion response record
                     completion = CompletionResponse(
                         id=response_data["id"],
                         completion_request_id=completion_request.id,
+                        annotation_target_id=new_annotation_target.id,
                         provider=response_data.get("provider", ""),
                         model=response_data.get("model", ""),
                         created=response_data.get("created", 0),

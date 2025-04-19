@@ -3,69 +3,203 @@ import type { Ref } from 'vue';
 import axios from 'axios';
 import { API_BASE_URL } from './config';
 
-interface AnnotationResponse {
-  annotation_id: string;
-  status: string;
-  message: string;
+// Existing AnnotationResponse interface
+export interface AnnotationResponse {
+  id: string;
+  timestamp: string;
+  rater_id?: string | null;
+  reward?: number | null;
+  annotation_metadata?: Record<string, any> | null;
+}
+
+// --- NEW: Type for the fetch request body ---
+interface GetAnnotationsByTargetRequest {
+  annotation_target_id: string;
+  intercept_key: string;
 }
 
 export function useAnnotation(interceptKey: Ref<string | null>) {
-  const annotationLoading = ref<Record<string, boolean>>({}); // Track loading per response ID
-  const annotationError = ref<Record<string, string | null>>({}); // Track errors per response ID
-  const annotationSuccess = ref<Record<string, boolean>>({}); // Track success per response ID
+  // --- State for CREATING annotations ---
+  // Keyed by the item's own ID (response ID or alternative ID) for UI feedback
+  const createAnnotationLoading = ref<Record<string, boolean>>({});
+  const createAnnotationError = ref<Record<string, string | null>>({});
+  const createAnnotationSuccess = ref<Record<string, boolean>>({});
 
-  async function annotateRewardOne(completionResponseId: string, raterId: string = 'guest-rater') {
+  // --- State for FETCHING annotations ---
+  // Keyed by annotationTargetId
+  const fetchedAnnotations = ref<Record<string, AnnotationResponse[]>>({});
+  const fetchAnnotationsLoading = ref<Record<string, boolean>>({});
+  const fetchAnnotationsError = ref<Record<string, string | null>>({});
+
+  // --- NEW: State for DELETING annotations ---
+  // Keyed by the annotation's own ID
+  const deleteAnnotationLoading = ref<Record<string, boolean>>({});
+  const deleteAnnotationError = ref<Record<string, string | null>>({});
+
+  // --- Function for CREATING annotations ---
+  async function annotateRewardOne(
+    uiStateKey: string, // ID of the specific item (response/alternative) for UI state
+    annotationTargetId: string,
+    raterId: string = 'guest-rater'
+  ) {
     if (!interceptKey.value) {
       console.error("Intercept key is missing, cannot annotate.");
-      annotationError.value[completionResponseId] = "Intercept key is missing.";
+      createAnnotationError.value = { ...createAnnotationError.value, [uiStateKey]: "Intercept key is missing." };
       return;
     }
-    if (!completionResponseId) {
-      console.error("Completion Response ID is missing, cannot annotate.");
-      annotationError.value[completionResponseId] = "Completion Response ID is missing.";
+    if (!annotationTargetId) {
+      console.error("Annotation Target ID is missing, cannot annotate.");
+      createAnnotationError.value = { ...createAnnotationError.value, [uiStateKey]: "Annotation Target ID is missing." };
       return;
     }
 
-    console.log(`Annotating ${completionResponseId} with reward 1 for key ${interceptKey.value}`);
+    console.log(`Annotating target ${annotationTargetId} with reward 1 for key ${interceptKey.value}`);
 
-    // Set loading state for this specific ID
-    annotationLoading.value = { ...annotationLoading.value, [completionResponseId]: true };
-    annotationError.value = { ...annotationError.value, [completionResponseId]: null };
-    annotationSuccess.value = { ...annotationSuccess.value, [completionResponseId]: false };
+    createAnnotationLoading.value = { ...createAnnotationLoading.value, [uiStateKey]: true };
+    createAnnotationError.value = { ...createAnnotationError.value, [uiStateKey]: null };
+    createAnnotationSuccess.value = { ...createAnnotationSuccess.value, [uiStateKey]: false };
 
-
-    const url = `${API_BASE_URL}/v1/chat/completions/annotation`;
+    const url = `${API_BASE_URL}/annotations/`;
     const data = {
-      completion_response_id: completionResponseId,
-      rater_id: raterId, // Using a default or pass one in
+      annotation_target_id: annotationTargetId,
+      rater_id: raterId,
       reward: 1,
-      annotation_metadata: {}, // Add metadata if needed
+      annotation_metadata: {},
       intercept_key: interceptKey.value
     };
 
     try {
       const response = await axios.post<AnnotationResponse>(url, data);
-      console.log(`Annotation successful for ${completionResponseId}:`, response.data);
-      annotationSuccess.value = { ...annotationSuccess.value, [completionResponseId]: true };
+      console.log(`Annotation successful for target ${annotationTargetId}:`, response.data);
+      createAnnotationSuccess.value = { ...createAnnotationSuccess.value, [uiStateKey]: true };
+
+      // --- NEW: Optionally refresh annotations after successful creation ---
+      // You might want to automatically call fetchAnnotationsForTarget here
+      // await fetchAnnotationsForTarget(annotationTargetId);
+      // Or let the user click refresh manually
+
     } catch (error: any) {
-      console.error(`Annotation failed for ${completionResponseId}:`, error);
+      console.error(`Annotation failed for target ${annotationTargetId}:`, error);
       let errorMessage = "An unknown error occurred during annotation.";
       if (axios.isAxiosError(error)) {
         errorMessage = error.response?.data?.detail || error.message || JSON.stringify(error.response?.data);
       } else if (error instanceof Error) {
         errorMessage = error.message;
       }
-      annotationError.value = { ...annotationError.value, [completionResponseId]: `Annotation failed: ${errorMessage}` };
+      createAnnotationError.value = { ...createAnnotationError.value, [uiStateKey]: `Annotation failed: ${errorMessage}` };
     } finally {
-      // Reset loading state for this specific ID
-      annotationLoading.value = { ...annotationLoading.value, [completionResponseId]: false };
+      createAnnotationLoading.value = { ...createAnnotationLoading.value, [uiStateKey]: false };
+    }
+  }
+
+  // --- Function for FETCHING annotations ---
+  async function fetchAnnotationsForTarget(annotationTargetId: string) {
+    if (!interceptKey.value) {
+      console.error("Intercept key is missing, cannot fetch annotations.");
+      fetchAnnotationsError.value = { ...fetchAnnotationsError.value, [annotationTargetId]: "Intercept key is missing." };
+      return;
+    }
+    if (!annotationTargetId) {
+      console.error("Annotation Target ID is missing, cannot fetch annotations.");
+      fetchAnnotationsError.value = { ...fetchAnnotationsError.value, [annotationTargetId]: "Annotation Target ID is missing." };
+      return;
+    }
+
+    console.log(`Fetching annotations for target ${annotationTargetId}`);
+    fetchAnnotationsLoading.value = { ...fetchAnnotationsLoading.value, [annotationTargetId]: true };
+    fetchAnnotationsError.value = { ...fetchAnnotationsError.value, [annotationTargetId]: null };
+
+    const url = `${API_BASE_URL}/annotations/target/list`;
+    const data: GetAnnotationsByTargetRequest = {
+      annotation_target_id: annotationTargetId,
+      intercept_key: interceptKey.value
+    };
+
+    try {
+      const response = await axios.post<AnnotationResponse[]>(url, data);
+      fetchedAnnotations.value = { ...fetchedAnnotations.value, [annotationTargetId]: response.data };
+      console.log(`Successfully fetched ${response.data.length} annotations for target ${annotationTargetId}`);
+    } catch (error: any) {
+      console.error(`Failed to fetch annotations for target ${annotationTargetId}:`, error);
+      let errorMessage = "An unknown error occurred fetching annotations.";
+      if (axios.isAxiosError(error)) {
+        errorMessage = error.response?.data?.detail || error.message || JSON.stringify(error.response?.data);
+      } else if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+      fetchAnnotationsError.value = { ...fetchAnnotationsError.value, [annotationTargetId]: `Fetch failed: ${errorMessage}` };
+      // Clear potentially stale data on error
+      fetchedAnnotations.value = { ...fetchedAnnotations.value, [annotationTargetId]: [] };
+
+    } finally {
+      fetchAnnotationsLoading.value = { ...fetchAnnotationsLoading.value, [annotationTargetId]: false };
+    }
+  }
+
+  // --- NEW: Function for DELETING an annotation ---
+  async function deleteAnnotation(annotationId: string) {
+    if (!interceptKey.value) {
+      console.error("Intercept key is missing, cannot delete annotation.");
+      deleteAnnotationError.value = { ...deleteAnnotationError.value, [annotationId]: "Intercept key is missing." };
+      return false; // Indicate failure
+    }
+    if (!annotationId) {
+      console.error("Annotation ID is missing, cannot delete annotation.");
+      deleteAnnotationError.value = { ...deleteAnnotationError.value, [annotationId]: "Annotation ID is missing." };
+      return false; // Indicate failure
+    }
+
+    console.log(`Attempting to delete annotation ${annotationId}`);
+    deleteAnnotationLoading.value = { ...deleteAnnotationLoading.value, [annotationId]: true };
+    deleteAnnotationError.value = { ...deleteAnnotationError.value, [annotationId]: null };
+
+    // Construct URL with query parameter for the key
+    const url = `${API_BASE_URL}/annotations/${annotationId}?intercept_key=${encodeURIComponent(interceptKey.value)}`;
+
+    try {
+      // Use axios.delete
+      await axios.delete(url);
+      console.log(`Successfully deleted annotation ${annotationId}`);
+
+      // --- Optional: Remove the annotation from the local state immediately ---
+      // This provides faster UI feedback but might differ from backend if refresh fails
+      // Object.keys(fetchedAnnotations.value).forEach(targetId => {
+      //   fetchedAnnotations.value[targetId] = fetchedAnnotations.value[targetId].filter(
+      //     ann => ann.id !== annotationId
+      //   );
+      // });
+
+      return true; // Indicate success
+
+    } catch (error: any) {
+      console.error(`Failed to delete annotation ${annotationId}:`, error);
+      let errorMessage = "An unknown error occurred during deletion.";
+      if (axios.isAxiosError(error)) {
+        errorMessage = error.response?.data?.detail || error.message || JSON.stringify(error.response?.data);
+      } else if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+      deleteAnnotationError.value = { ...deleteAnnotationError.value, [annotationId]: `Deletion failed: ${errorMessage}` };
+      return false; // Indicate failure
+    } finally {
+      deleteAnnotationLoading.value = { ...deleteAnnotationLoading.value, [annotationId]: false };
     }
   }
 
   return {
-    annotationLoading,
-    annotationError,
-    annotationSuccess,
-    annotateRewardOne
+    // Create state/methods
+    createAnnotationLoading,
+    createAnnotationError,
+    createAnnotationSuccess,
+    annotateRewardOne,
+    // Fetch state/methods
+    fetchedAnnotations,
+    fetchAnnotationsLoading,
+    fetchAnnotationsError,
+    fetchAnnotationsForTarget,
+    // Delete state/methods
+    deleteAnnotationLoading,
+    deleteAnnotationError,
+    deleteAnnotation
   };
 }

@@ -45,6 +45,7 @@ app = FastAPI(title="intercebd-backend", version="0.1.0")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+'''
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -52,7 +53,16 @@ app.add_middleware(
     allow_methods=["*"],  # Allows all methods (GET, POST, PUT, DELETE, etc.)
     allow_headers=["*"],  # Allows all headers
 )
+'''
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[settings.frontend_base_url],
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"],  # Allows all headers
+)
 
+'''
 from middleware import EnforceStrictCORSPostMiddleware
 logger.info(f"Adding EnforceStrictCORSPostMiddleware for strict origins: {[settings.frontend_base_url]}")
 app.add_middleware(
@@ -60,6 +70,7 @@ app.add_middleware(
     strict_origins=[settings.frontend_base_url], # Pass the STRICT list here
     public_path_prefix="/api/cors-anywhere" # The path prefix for the permissive sub-app
 )
+'''
 
 app.add_middleware(
    SessionMiddleware,
@@ -432,7 +443,7 @@ async def proxy(request: Request, session: AsyncSession = Depends(get_db)):
     #raise HTTPException(status_code=401, detail=f"Test exception with api key and openrouter, {api_key} and or: {matching_openrouter_key.or_key}")
     if not matching_openrouter_key:
         # Handle case where intercept key is valid but no matching OpenRouter key is found
-        raise HTTPException(status_code=401, detail=f"Valid intercept key, but no corresponding OpenRouter key configured: {matching_openrouter_key}")
+        raise HTTPException(status_code=401, detail=f"Problems with getting openrouter guest key: {matching_openrouter_key}")
     # Replace the incoming Authorization header with the found OpenRouter key
     headers["authorization"] = f"Bearer {matching_openrouter_key.or_key}"
     print("Replaced Authorization header with OpenRouter key.")

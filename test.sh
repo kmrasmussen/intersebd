@@ -70,9 +70,8 @@ curl -X POST http://localhost:9003/v1/chat/completions \
   ]
 }'
 
-curl -X POST http://localhost:9003/v1/chat/completions \
+curl -X POST http://openrouter.ai/api/v1/chat/completions \
      -H "Authorization: Bearer $OPENROUTER_API_KEY" \
-     -H "x-intercept-key: 8e12655d-3df2-4c60-82ac-fd0fd71f0a4e" \
      -H "Content-Type: application/json" \
      -d '{
   "model": "openai/gpt-4o-mini",

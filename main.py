@@ -524,11 +524,16 @@ async def proxy(request: Request, session: AsyncSession = Depends(get_db)):
                     first_choice = choices[0] # Get first choice or empty dict
                     message = first_choice.get("message", {})
 
+                    new_annotation_target = AnnotationTarget()
+                    session.add(new_annotation_target)
+                    await session.flush() # Flush to get the ID of the new target
+                    print(f'Created annotation target with id {new_annotation_target.id}')
 
                     # Create completion response record
                     completion = CompletionResponse(
                         id=response_data["id"],
                         completion_request_id=completion_request.id,
+                        annotation_target_id=new_annotation_target.id,
                         provider=response_data.get("provider", ""),
                         model=response_data.get("model", ""),
                         created=response_data.get("created", 0),

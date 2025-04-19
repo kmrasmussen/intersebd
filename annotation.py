@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, joinedload # Import joinedload
 from typing import List, Optional, Dict, Any
 import uuid
 from pydantic import BaseModel, Field # Import BaseModel and Field
@@ -241,3 +241,89 @@ async def get_annotations_for_target(
     # 3. Return the already loaded annotations
     logger.info(f"Returning {len(target.annotations)} annotations for target {target_id}")
     return target.annotations
+
+# --- NEW: Endpoint to delete an annotation ---
+@router.delete(
+    "/{annotation_id}",
+    status_code=status.HTTP_204_NO_CONTENT, # Standard for successful DELETE
+    summary="Delete a specific annotation"
+)
+async def delete_annotation(
+    annotation_id: uuid.UUID,
+    intercept_key: str = Query(..., description="Intercept key for verification"), # Get key from query param
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    Deletes a specific annotation by its ID, verifying ownership via the
+    intercept key associated with the annotation's target(s).
+    """
+    # 1. Find the annotation and load necessary relationships for verification
+    stmt = (
+        select(CompletionAnnotation)
+        .where(CompletionAnnotation.id == annotation_id)
+        .options(
+            # Load the targets this annotation applies to
+            selectinload(CompletionAnnotation.annotation_targets)
+            .options(
+                # From the target, load the response and its request
+                selectinload(AnnotationTarget.completion_response)
+                .selectinload(CompletionResponse.completion_request),
+                # From the target, load the alternative
+                selectinload(AnnotationTarget.completion_alternative)
+            )
+        )
+    )
+    result = await session.execute(stmt)
+    annotation = result.scalar_one_or_none()
+
+    if not annotation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Annotation not found"
+        )
+
+    # 2. Verify the intercept key against *any* associated target
+    #    (An annotation might theoretically be linked to multiple targets,
+    #     though unlikely in the current setup. We need to ensure the user
+    #     has rights via at least one path).
+    verified = False
+    if not annotation.annotation_targets:
+         logger.warning(f"Annotation {annotation_id} has no associated targets.")
+         # Decide if this is an error or just means it can be deleted?
+         # Let's treat it as deletable but log it.
+         verified = True # Or raise 500 if targets are mandatory
+
+    for target in annotation.annotation_targets:
+        associated_intercept_key: Optional[str] = None
+        if target.completion_response and target.completion_response.completion_request:
+            associated_intercept_key = target.completion_response.completion_request.intercept_key
+        elif target.completion_alternative:
+            associated_intercept_key = target.completion_alternative.intercept_key
+
+        if associated_intercept_key == intercept_key:
+            verified = True
+            break # Found a valid key association
+
+    if not verified:
+        logger.warning(f"Intercept key mismatch trying to delete annotation {annotation_id}.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Provided intercept key does not match any associated target or access denied."
+        )
+
+    # 3. Delete the annotation
+    logger.info(f"Deleting annotation {annotation_id}...")
+    await session.delete(annotation)
+    try:
+        await session.commit()
+        logger.info(f"Successfully deleted annotation {annotation_id}.")
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"Error deleting annotation {annotation_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete annotation from database"
+        )
+
+    # No response body needed for 204
+    return None

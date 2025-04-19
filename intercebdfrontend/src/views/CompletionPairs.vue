@@ -222,18 +222,26 @@ onMounted(() => {
            <h5>Response:</h5>
            <pre v-if="pair.response"><code>{{ JSON.stringify(pair.response, null, 2) }}</code></pre>
            <p v-else><i>(No response yet)</i></p>
-           <div v-if="pair.response" class="annotation-controls">
-             <button
-               @click="annotateRewardOne(pair.response.id)"
-               :disabled="annotationLoading[pair.response.id] || !interceptKey"
-             >
-               {{ annotationLoading[pair.response.id] ? 'Annotating...' : 'Annotate with reward 1' }}
-             </button>
-             <span v-if="annotationSuccess[pair.response.id]" style="color: green; margin-left: 10px;">✓ Annotated!</span>
-             <span v-if="annotationError[pair.response.id]" style="color: red; margin-left: 10px;">{{ annotationError[pair.response.id] }}</span>
-           </div>
 
-            <!-- *** START: Alternatives Section *** -->
+           <!-- *** START: Modified Annotation Controls *** -->
+           <div v-if="pair.response" class="annotation-controls">
+             <div v-if="pair.response.annotation_target_id">
+               <button
+                 @click="annotateRewardOne(pair.response.id, pair.response.annotation_target_id)"
+                 :disabled="annotationLoading[pair.response.id] || !interceptKey || !pair.response.annotation_target_id"
+               >
+                 {{ annotationLoading[pair.response.id] ? 'Annotating...' : 'Annotate with reward 1' }}
+               </button>
+               <span v-if="annotationSuccess[pair.response.id]" style="color: green; margin-left: 10px;">✓ Annotated!</span>
+               <span v-if="annotationError[pair.response.id]" style="color: red; margin-left: 10px;">{{ annotationError[pair.response.id] }}</span>
+             </div>
+             <div v-else> <!-- Handles case where response exists but target_id doesn't -->
+               <span style="color: orange; font-style: italic;">Annotation target ID missing. Cannot annotate.</span>
+             </div>
+           </div>
+           <!-- *** END: Modified Annotation Controls *** -->
+
+            <!-- Alternatives Section -->
             <div class="alternatives-section">
              <h5>Alternatives:</h5>
              <!-- Button to trigger fetching -->

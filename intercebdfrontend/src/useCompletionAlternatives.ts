@@ -7,6 +7,7 @@ interface CompletionAlternative {
   alternative_content: string;
   rater_id: string | null;
   created_at: string; // ISO date string
+  annotation_target_id: string | null;
 }
 
 // Type for the API response when listing alternatives

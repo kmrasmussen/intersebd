@@ -30,6 +30,7 @@ from completion_pairs import router as completion_pairs_router
 from completion_alternatives import router as completion_alternatives_router
 from agent_widget import router as agent_widget_router # Import the new router
 from corsanywhere import cors_anywhere_app # Import the CORS Anywhere app
+from annotation import router as annotation_router
 from config import settings
 import logging
 
@@ -84,6 +85,7 @@ app.include_router(provider_keys_router)
 app.include_router(completion_pairs_router)
 app.include_router(completion_alternatives_router)
 app.include_router(agent_widget_router) # Include the new router
+app.include_router(annotation_router)
 
 app.mount("/api/cors-anywhere", cors_anywhere_app)
 

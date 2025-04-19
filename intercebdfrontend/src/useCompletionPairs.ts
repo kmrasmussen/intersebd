@@ -15,6 +15,7 @@ interface CompletionsRequestDetailDto {
 interface CompletionResponseDetailDto {
   id: string;
   completion_request_id: string;
+  annotation_target_id: string | null;
   provider: string | null;
   model: string | null;
   created: number | null;

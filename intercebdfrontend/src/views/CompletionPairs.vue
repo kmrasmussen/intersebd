@@ -8,6 +8,7 @@ import { useAnnotation } from '../useAnnotation'; // Import the new composable
 import { useCompletionAlternatives } from '../useCompletionAlternatives';
 import { API_BASE_URL } from '../config';
 import AnnotatableItemDisplay from '../components/AnnotatableItemDisplay.vue';
+import SftDatasetDownloader from '../components/SftDatasetDownloader.vue'; // <-- IMPORT NEW COMPONENT
 
 const route = useRoute();
 const viewingId = route.params.viewingId as string;
@@ -206,6 +207,9 @@ onMounted(() => {
     <br >
      <!-- Collapsible Explanation Section -->
   
+    <!-- *** USE THE NEW COMPONENT *** -->
+    <SftDatasetDownloader :interceptKey="interceptKey" />
+    <!-- *** END USE THE NEW COMPONENT *** -->
 
     <!-- Pairs Display Section -->
     <div>

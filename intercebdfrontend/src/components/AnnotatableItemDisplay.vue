@@ -374,55 +374,50 @@ small {
 
 /* NEW: Container for delete controls */
 .delete-control {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-  border-radius: 3px;
-  padding: 1px 3px;
-  /* --- TEMPORARY DEBUGGING --- */
-  background-color: rgba(255, 255, 0, 0.5); /* Yellow background */
-  /* --- END TEMPORARY --- */
-}
-.delete-control:hover {
-  background-color: #ffeeee; /* Background on hover for the whole control */
-}
-
-/* Disabled state for the control */
-.delete-control.disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-.delete-control.disabled:hover {
-  background-color: transparent; /* No hover effect when disabled */
+  display: inline-flex; /* Keep items inline */
+  align-items: center; /* Vertically center items */
+  gap: 4px; /* Space between separator, button, text */
 }
 
 /* Adjust delete button styles */
 .delete-annotation-btn {
-  padding: 0px 4px;
+  padding: 0px 4px; /* Minimal padding */
   font-size: 0.8em;
   line-height: 1;
-  background-color: transparent;
-  border: 1px solid #ffaaaa;
+  background-color: transparent; /* Make background transparent */
+  border: 1px solid #ffaaaa; /* Keep border */
   color: #c00;
+  cursor: pointer;
   border-radius: 3px;
-  font-weight: bold;
-  margin: 0; /* Remove margins */
-  pointer-events: none; /* Prevent button stealing clicks */
+  font-weight: bold; /* Make X bold */
+  /* Remove inherited margins */
+  margin-top: 0;
+  margin-right: 0;
+  margin-left: 0; /* Remove auto margin */
+}
+.delete-annotation-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.delete-annotation-btn:hover {
+  background-color: #ffeeee; /* Slight background on hover */
 }
 
-/* Style for the "delete" text */
+/* NEW: Style for the "delete" text */
 .delete-text {
   font-size: 0.8em;
-  color: #cc0000;
-  user-select: none; /* Prevent text selection */
+  color: #cc0000; /* Match button color */
+  cursor: pointer; /* Make text look clickable (optional) */
+}
+.delete-text:hover {
+  text-decoration: underline;
 }
 
 .delete-error {
   color: #c00;
   font-size: 0.8em;
   font-weight: bold;
-  cursor: help;
+  cursor: help; 
   margin-left: 5px; /* Add space before error icon */
 }
 

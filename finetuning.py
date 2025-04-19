@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Set
 import uuid
@@ -7,6 +7,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload, joinedload
 from sqlalchemy import and_
 import logging
+import json
 
 # Assuming get_db and models are accessible (adjust imports as needed)
 from database import get_db
@@ -24,14 +25,14 @@ class SftMessageSchema(BaseModel):
     weight: Optional[int] = Field(None, description="Weight for fine-tuning (0 or 1, default is None/ignored)")
 
     class Config:
-        orm_mode = False # Not directly mapping from ORM for this structure
+        orm_mode = False
 
 class SftConversationSchema(BaseModel):
     """Represents a full conversation, typically a list of messages."""
     messages: List[SftMessageSchema] = Field(..., description="A list of messages forming the conversation")
 
     class Config:
-        orm_mode = False # Not directly mapping from ORM for this structure
+        orm_mode = False
 
 # --- Router Setup ---
 
@@ -45,26 +46,15 @@ router = APIRouter(
     },
 )
 
-# --- Endpoint Definition ---
-
-@router.post(
-    "/sftdataset",
-    response_model=List[SftConversationSchema],
-    summary="Generate an SFT dataset from annotated conversations",
-    response_model_exclude_none=True  # <-- ADD THIS LINE
-)
-async def generate_sft_dataset(
-    intercept_key: str = Depends(get_intercept_key_from_header),
-    session: AsyncSession = Depends(get_db)
-):
+# --- Internal Helper Function ---
+async def _generate_sft_conversation_data(
+    intercept_key: str,
+    session: AsyncSession
+) -> List[SftConversationSchema]:
     """
-    Generates a dataset suitable for Supervised Fine-Tuning (SFT).
-
-    It retrieves conversation histories (requests) associated with the provided
-    intercept key (from Authorization header) and formats them based on
-    positively annotated (reward=1) responses or alternatives.
+    Internal helper to fetch and format SFT conversation data.
+    Returns a list of SftConversationSchema objects.
     """
-    logger.info(f"Generating SFT dataset for intercept key (last 4): ...{intercept_key[-4:]}")
     sft_dataset: List[SftConversationSchema] = []
     potential_target_ids: Set[uuid.UUID] = set()
 
@@ -95,7 +85,7 @@ async def generate_sft_dataset(
                 potential_target_ids.add(alt.annotation_target.id)
 
     if not potential_target_ids:
-        logger.info("No potential annotation targets found for this key. Returning empty dataset.")
+        logger.info("No potential annotation targets found for this key. Returning empty list.")
         return []
     logger.debug(f"Collected {len(potential_target_ids)} potential target IDs.")
 
@@ -118,7 +108,7 @@ async def generate_sft_dataset(
     logger.debug(f"Found {len(valid_target_ids)} positively annotated targets.")
 
     if not valid_target_ids:
-        logger.info("None of the potential targets have positive (reward=1) annotations. Returning empty dataset.")
+        logger.info("None of the potential targets have positive (reward=1) annotations. Returning empty list.")
         return []
 
     # 4. Python Processing: Iterate, check annotations, format conversations
@@ -130,12 +120,11 @@ async def generate_sft_dataset(
              continue
 
         try:
-            # Ensure weight is None unless explicitly set (like for assistant)
             base_messages = [
                 SftMessageSchema(
                     role=msg.get("role"),
                     content=msg.get("content"),
-                    weight=None # Explicitly set to None here
+                    weight=None
                 )
                 for msg in base_messages_data
                 if isinstance(msg, dict) and 'role' in msg and 'content' in msg
@@ -170,3 +159,49 @@ async def generate_sft_dataset(
 
     logger.info(f"Generated {len(sft_dataset)} SFT conversation entries.")
     return sft_dataset
+
+# --- Endpoint Definitions ---
+
+@router.post(
+    "/sftdataset",
+    response_model=List[SftConversationSchema],
+    summary="Generate an SFT dataset (JSON array) from annotated conversations",
+    response_model_exclude_none=True
+)
+async def generate_sft_dataset_json(
+    intercept_key: str = Depends(get_intercept_key_from_header),
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    Generates a dataset suitable for Supervised Fine-Tuning (SFT) as a JSON array.
+
+    Retrieves conversation histories associated with the provided intercept key
+    and formats them based on positively annotated (reward=1) responses/alternatives.
+    """
+    logger.info(f"Generating SFT dataset (JSON) for intercept key (last 4): ...{intercept_key[-4:]}")
+    sft_data = await _generate_sft_conversation_data(intercept_key, session)
+    return sft_data
+
+@router.post(
+    "/sftdataset.jsonl",
+    summary="Generate an SFT dataset (JSON Lines) from annotated conversations",
+    response_class=Response
+)
+async def generate_sft_dataset_jsonl(
+    intercept_key: str = Depends(get_intercept_key_from_header),
+    session: AsyncSession = Depends(get_db)
+):
+    """
+    Generates a dataset suitable for Supervised Fine-Tuning (SFT) in JSON Lines format.
+
+    Each line in the response body is a JSON object representing one conversation.
+    Retrieves conversation histories associated with the provided intercept key
+    and formats them based on positively annotated (reward=1) responses/alternatives.
+    """
+    logger.info(f"Generating SFT dataset (JSONL) for intercept key (last 4): ...{intercept_key[-4:]}")
+    sft_data = await _generate_sft_conversation_data(intercept_key, session)
+
+    # Convert list of Pydantic objects to JSONL string
+    jsonl_content = "\n".join([conv.json(exclude_none=True) for conv in sft_data])
+
+    return Response(content=jsonl_content, media_type="application/jsonl")

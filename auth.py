@@ -216,16 +216,17 @@ async def check_login_status(current_user: Optional[models.User] = Depends(get_c
         return LoginStatusResponse(is_logged_in=False, is_guest=False)
 
 @router.get("/logout")
-async def logout(request: Request, response: Response):
+async def logout(request: Request, response: Response): # Keep response parameter
     request.session.pop('user_id', None) # Pop user_id from session
     # Also clear the guest cookie on explicit logout
     response.delete_cookie(GUEST_USER_ID_COOKIE)
-    print('successfully logged out user')
-    # RedirectResponse needs to be returned, not just called
-    redirect_resp = RedirectResponse(url=settings.frontend_base_url)
-    # Need to set the cookie deletion on the actual response being returned
-    redirect_resp.delete_cookie(GUEST_USER_ID_COOKIE)
-    return redirect_resp
+    print('successfully logged out user (session/cookie cleared)')
+
+    # --- CHANGE: Return simple success response instead of redirect ---
+    # The frontend will handle the page reload/redirect
+    # Returning the 'response' object ensures the delete_cookie header is sent.
+    response.status_code = status.HTTP_200_OK # Explicitly set 200 OK
+    return response
 
 # --- Endpoint to Create Guest User ---
 class GuestUserResponse(BaseModel):

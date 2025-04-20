@@ -4,5 +4,8 @@ request_logs/
 */.env*.development
 
 # Node modules
-node_modules/ 
+node_modules/
 gitignored/
+
+# Frontend build output
+newmockedfrontend/dist/

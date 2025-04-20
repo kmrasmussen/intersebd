@@ -4,7 +4,7 @@ import App from './App' // We will create this next
 import './index.css' // Assuming your global styles are here (Tailwind)
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
+  // <React.StrictMode> // <-- COMMENT OUT THIS LINE
     <App />
-  </React.StrictMode>,
+  // </React.StrictMode>, // <-- COMMENT OUT THIS LINE
 )

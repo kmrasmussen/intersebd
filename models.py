@@ -202,7 +202,6 @@ class CompletionAnnotation(Base):
         secondary=annotation_target_annotation_link, # Use the association table
         back_populates="annotations" # Matches relationship name in AnnotationTarget
     )
-    rater = relationship("User")
 
 class OpenRouterGuestKey(Base):
     __tablename__ = "openrouter_guest_keys"
@@ -218,7 +217,7 @@ class OpenRouterGuestKey(Base):
     or_key = Column(String, nullable=False)
     or_usage = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
-    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    user_id = Column(String, nullable=True)
 
 class AgentWidget(Base):
     __tablename__ = "agent_widgets"
@@ -226,7 +225,7 @@ class AgentWidget(Base):
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     cors_origin = Column(String, nullable=False)
     tools = Column(JSON, nullable=False)
-    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    user_id = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     n_calls = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)

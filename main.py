@@ -34,6 +34,7 @@ from annotation import router as annotation_router
 from config import settings
 from finetuning import router as finetuning_router
 from nextmockingrouter import router as nextmocking_router
+from completion_projects import router as completion_projects_router
 import logging
 
 # Configure logging
@@ -56,7 +57,12 @@ app.add_middleware(
     allow_methods=["*"],  # Allows all methods (GET, POST, PUT, DELETE, etc.)
     allow_headers=["*"],  # Allows all headers
 )
+
 '''
+# Add this debug print:
+print(f"DEBUG: Configuring CORS with allow_origins=['{settings.frontend_base_url}'] and allow_credentials=True")
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.frontend_base_url],
@@ -90,7 +96,7 @@ app.include_router(agent_widget_router) # Include the new router
 app.include_router(annotation_router)
 app.include_router(finetuning_router)
 app.include_router(nextmocking_router)
-
+app.include_router(completion_projects_router)
 
 app.mount("/api/cors-anywhere", cors_anywhere_app)
 

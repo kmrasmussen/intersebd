@@ -5,11 +5,13 @@ import os
 from fastapi.responses import RedirectResponse
 from authlib.integrations.starlette_client import OAuth
 from config import settings
-from sqlalchemy.orm import Session  # Import Session
+from sqlalchemy.ext.asyncio import AsyncSession  # Changed to AsyncSession
+from sqlalchemy.future import select  # Use select for async queries
 from database import get_db  # Import your DB session getter
 import models  # Import your models
 import uuid  # Import uuid
 from datetime import datetime  # Import datetime
+from sqlalchemy.exc import SQLAlchemyError  # Import SQLAlchemyError for broader DB exceptions
 
 # imports from solutions
 from config import settings
@@ -57,64 +59,51 @@ router = APIRouter(
 # --- Guest Cookie Name ---
 GUEST_USER_ID_COOKIE = "guest_user_id"
 
-# Modified get_current_user to also check for guest cookie
-async def get_current_user(request: Request, db: Session = Depends(get_db)) -> Optional[models.User]:
-    user: Optional[models.User] = None
-    user_id_str = request.session.get('user_id') # Get user_id (UUID string) from session
+# --- Async get_current_user ---
+async def get_current_user(request: Request, db: AsyncSession = Depends(get_db)) -> Optional[models.User]: # Changed to async def, type hint AsyncSession
+    print(f"get_current_user: All cookies: {request.cookies}") # DEBUG
+    guest_user_id_str = request.cookies.get(GUEST_USER_ID_COOKIE)
+    print(f"get_current_user: Found guest cookie value: {guest_user_id_str}") # DEBUG
 
-    # --- 1. Check for Session User (Logged-in) ---
-    if user_id_str:
+    if guest_user_id_str:
         try:
-            user_id = uuid.UUID(user_id_str) # Convert string back to UUID
-            user = db.query(models.User).filter(models.User.id == user_id).first()
+            guest_user_id = uuid.UUID(guest_user_id_str)
+            # Use async query with select
+            stmt = select(models.User).filter(models.User.id == guest_user_id)
+            result = await db.execute(stmt)
+            user = result.scalars().first() # Use scalars().first() for async result
+            if user:
+                print(f"get_current_user: Found guest user in DB: {user.id}") # DEBUG
+                return user
+            else:
+                print(f"get_current_user: Guest user ID {guest_user_id} not found in DB.") # DEBUG
+        except (ValueError, TypeError) as e:
+            print(f"get_current_user: Invalid guest user ID format in cookie: {guest_user_id_str}, Error: {e}") # DEBUG
+        except Exception as e:
+             print(f"get_current_user: Database error looking up guest user: {e}") # DEBUG
 
-            if not user:
-                # Session user ID exists but user not found in DB (stale session?)
-                request.session.pop('user_id', None) # Clear invalid session data
-                print(f"Session user_id {user_id_str} not found in DB. Clearing session.")
-            # Optional: Check if user is active
-            # elif not user.is_active:
-            #     request.session.pop('user_id', None)
-            #     print(f"Session user {user.id} is inactive. Clearing session.")
-            #     user = None # Treat inactive user as not logged in for this context
+    # Check for session-based user (Google Login) - Assuming synchronous session handling for now
+    # If session middleware is also async, this part might need adjustment too
+    user_id = request.session.get('user_id')
+    if user_id:
+        try:
+            user_uuid = uuid.UUID(user_id)
+            # Use async query
+            stmt = select(models.User).filter(models.User.id == user_uuid)
+            result = await db.execute(stmt)
+            user = result.scalars().first()
+            if user:
+                 print(f"get_current_user: Found session user in DB: {user.id}") # DEBUG
+                 return user
+            else:
+                 print(f"get_current_user: Session user ID {user_uuid} not found in DB.") # DEBUG
+        except (ValueError, TypeError) as e:
+            print(f"get_current_user: Invalid user ID format in session: {user_id}, Error: {e}") # DEBUG
+        except Exception as e:
+             print(f"get_current_user: Database error looking up session user: {e}") # DEBUG
 
-        except ValueError:
-            # Invalid UUID format in session
-            request.session.pop('user_id', None) # Clear invalid session data
-            print(f"Invalid UUID format in session user_id: {user_id_str}. Clearing session.")
-            user = None # Ensure user is None if session ID was invalid
-
-    # --- 2. If No Session User, Check for Guest Cookie ---
-    if user is None:
-        guest_user_id_str = request.cookies.get(GUEST_USER_ID_COOKIE)
-        if guest_user_id_str:
-            try:
-                guest_user_id = uuid.UUID(guest_user_id_str)
-                # Find user by ID only if they are marked as a guest (auth_provider is None)
-                guest_user = db.query(models.User).filter(
-                    models.User.id == guest_user_id,
-                    models.User.auth_provider == None
-                ).first()
-
-                if guest_user:
-                    print(f"Identified guest user via cookie: {guest_user.id}")
-                    user = guest_user # Set user to the found guest user
-                # else: User ID in cookie doesn't match a guest user in DB (stale/invalid cookie?)
-                #     No action needed here, user remains None
-
-            except ValueError:
-                # Invalid UUID format in cookie
-                print(f"Invalid UUID format in guest cookie: {guest_user_id_str}")
-                # Optionally delete the invalid cookie? Might be aggressive.
-                # response.delete_cookie(GUEST_USER_ID_COOKIE) # Need Response object here
-
-    # --- 3. Return Found User (Logged-in or Guest) or None ---
-    if user:
-        print(f"get_current_user returning user: {user.id} (auth: {user.auth_provider})")
-    else:
-        print("get_current_user returning None")
-
-    return user
+    print("get_current_user: No valid user found, returning None.") # DEBUG
+    return None
 
 @router.get("/login/google")
 async def login_via_google(request: Request):
@@ -123,7 +112,7 @@ async def login_via_google(request: Request):
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
 @router.get("/login/google/callback", name="auth_google_callback")
-async def auth_google_callback(request: Request, response: Response, db: Session = Depends(get_db)):
+async def auth_google_callback(request: Request, response: Response, db: AsyncSession = Depends(get_db)): # Changed to AsyncSession
     try:
         token = await oauth.google.authorize_access_token(request)
         print('got token back from google', token)
@@ -155,7 +144,9 @@ async def auth_google_callback(request: Request, response: Response, db: Session
 
     # --- Simplified Database Logic ---
     # 1. Check if user exists with this Google ID
-    user = db.query(models.User).filter(models.User.google_id == google_id).first()
+    stmt = select(models.User).filter(models.User.google_id == google_id)
+    result = await db.execute(stmt)
+    user = result.scalars().first()
 
     if user:
         # --- Case 1: Existing Registered User Found ---
@@ -169,14 +160,16 @@ async def auth_google_callback(request: Request, response: Response, db: Session
             user.name = name
             needs_update = True
         if needs_update:
-            db.commit()
-            db.refresh(user)
+            await db.commit()
+            await db.refresh(user)
 
     else:
         # --- Case 2: No User Found by Google ID - Check for email conflict and Create New ---
         print(f"No user found for Google ID {google_id}. Checking email {email} and creating new user.")
         # Check if another user already exists with this email (conflict)
-        existing_email_user = db.query(models.User).filter(models.User.email == email).first()
+        stmt = select(models.User).filter(models.User.email == email)
+        result = await db.execute(stmt)
+        existing_email_user = result.scalars().first()
         if existing_email_user:
              # If email exists but google_id didn't match, it's a conflict
              raise HTTPException(
@@ -191,8 +184,8 @@ async def auth_google_callback(request: Request, response: Response, db: Session
             auth_provider='google' # Mark as registered via Google
         )
         db.add(user)
-        db.commit()
-        db.refresh(user)
+        await db.commit()
+        await db.refresh(user)
         print(f"Created new registered user: {user.id}")
 
     # --- Store User ID (UUID as string) in session ---
@@ -234,26 +227,51 @@ async def logout(request: Request, response: Response):
     redirect_resp.delete_cookie(GUEST_USER_ID_COOKIE)
     return redirect_resp
 
-# --- Keep Endpoint to Create Guest User ---
-# Even if not used during login, it's needed for the initial guest creation flow
+# --- Endpoint to Create Guest User ---
 class GuestUserResponse(BaseModel):
     guest_user_id: uuid.UUID
 
 @router.post("/users/guest", response_model=GuestUserResponse, status_code=status.HTTP_201_CREATED)
-async def create_guest_user(response: Response, db: Session = Depends(get_db)):
-    guest_user = models.User(auth_provider=None) # Create user with no auth provider
-    db.add(guest_user)
-    db.commit()
-    db.refresh(guest_user)
-    print(f"Created guest user: {guest_user.id}")
+async def create_guest_user(response: Response, db: AsyncSession = Depends(get_db)): # Changed to async def, type hint AsyncSession
+    generated_id = uuid.uuid4()
+    print(f"Explicitly generated UUID: {generated_id}")
+    guest_user = models.User(id=generated_id, auth_provider=None)
 
-    # Set the guest user ID in an HttpOnly cookie
+    if not isinstance(guest_user.id, uuid.UUID) or guest_user.id != generated_id:
+         print(f"Critical Error: guest_user.id could not be assigned. Value: {guest_user.id}")
+         raise HTTPException(status_code=500, detail="Failed to assign generated guest user ID.")
+
+    print(f"Attempting to create guest user with assigned ID: {guest_user.id}")
+    try:
+        db.add(guest_user)
+        await db.commit() # Use await
+        try:
+            await db.refresh(guest_user) # Use await
+        except SQLAlchemyError as refresh_exc:
+            # Note: Refresh might behave differently or be less necessary with async sessions depending on config
+            print(f"Warning: db.refresh failed after commit. Error: {refresh_exc}")
+    except SQLAlchemyError as e:
+        await db.rollback() # Use await
+        print(f"Error committing guest user to DB: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error creating guest user: {e}")
+
+    if not isinstance(guest_user.id, uuid.UUID):
+         print(f"Error: guest_user.id is not UUID after commit/refresh. Value: {guest_user.id}")
+         raise HTTPException(status_code=500, detail="Failed to retrieve valid guest user ID.")
+
+    print(f"Successfully created guest user: {guest_user.id}")
+
+    cookie_value = str(guest_user.id)
+    cookie_key = GUEST_USER_ID_COOKIE
+    # Revert to Lax, remove Secure
+    print(f"Setting cookie: Key='{cookie_key}', Value='{cookie_value}', HttpOnly=True, SameSite='Lax', Path='/'") # DEBUG
     response.set_cookie(
-        key=GUEST_USER_ID_COOKIE,
-        value=str(guest_user.id),
+        key=cookie_key,
+        value=cookie_value,
         httponly=True,
-        samesite="lax",
-        # secure=True, # Uncomment for production HTTPS
-        max_age=60*60*24*365 # Example: 1 year expiry
+        samesite="lax", # <-- REVERT TO 'lax' (or omit, as Lax is default)
+        # secure=True,  # <-- REMOVE secure=True
+        max_age=60*60*24*365,
+        path="/"
     )
     return GuestUserResponse(guest_user_id=guest_user.id)

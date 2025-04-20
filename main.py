@@ -33,6 +33,7 @@ from corsanywhere import cors_anywhere_app # Import the CORS Anywhere app
 from annotation import router as annotation_router
 from config import settings
 from finetuning import router as finetuning_router
+from nextmockingrouter import router as nextmocking_router
 import logging
 
 # Configure logging
@@ -88,6 +89,7 @@ app.include_router(completion_alternatives_router)
 app.include_router(agent_widget_router) # Include the new router
 app.include_router(annotation_router)
 app.include_router(finetuning_router)
+app.include_router(nextmocking_router)
 
 
 app.mount("/api/cors-anywhere", cors_anywhere_app)

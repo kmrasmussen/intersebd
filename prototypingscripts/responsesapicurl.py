@@ -70,3 +70,88 @@ if response.status_code == 200:
         print("\nok don't know, response output is empty or missing")
 else:
     print("\nRequest failed.")
+
+'''
+curl -X 'POST' \
+  'http://localhost:9003/agent-widgets/new_widget' \
+  -H 'accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "user_id": "string",
+  "origin": "string",
+"tools": [
+        {
+            "type": "function",
+            "name": "get_weather",
+            "description": "Get current temperature for a given location.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": "City and country e.g. Bogotá, Colombia"
+                    }
+                },
+                "required": [
+                    "location"
+                ],
+                "additionalProperties": false
+            }
+        }
+    ]
+}'
+
+{
+  "user_id": "string",
+  "origin": "null",
+"tools": [
+        {
+            "type": "function",
+            "name": "get_weather",
+            "description": "Get current temperature for a given location.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": "City and country e.g. Bogotá, Colombia"
+                    }
+                },
+                "required": [
+                    "location"
+                ],
+                "additionalProperties": false
+            }
+        }
+    ]
+}
+
+
+{
+  "widget_id": "5d23f55b-9853-4080-a5c1-7fbe634fea89",
+  "origin": "string",
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_weather",
+      "description": "Get current temperature for a given location.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City and country e.g. Bogotá, Colombia"
+          }
+        },
+        "required": [
+          "location"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "user_id": "string",
+  "message": "Agent Widget created successfully."
+}
+
+''''

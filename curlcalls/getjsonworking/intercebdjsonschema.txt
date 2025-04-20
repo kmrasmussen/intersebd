@@ -1,0 +1,50 @@
+curl \
+-X POST http://localhost:9003/v1/chat/completions \
+-H "Authorization: Bearer sk-intercebd-v1-_mgCkVTJV1JlteYA03d3i7utksOTbxZqjt7b23WE4xVjqRPpd_p5Cw" \
+-H "Content-Type: application/json" \
+     -d '{
+  "model": "openai/gpt-4.1-nano",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What books did jordan peterson write?"
+    }
+  ],
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "books",
+      "strict": true, 
+      "schema": {
+        "type": "object",
+        "properties": {
+          "author": {
+            "type": "string",
+            "description": "Author name"
+          },
+          "books": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "description": "Book title"
+                },
+                "year": {
+                  "type": "number",
+                  "description": "Year of publication"
+                }
+              },
+              "required": ["title", "year"],
+              "additionalProperties": false
+            },
+            "description": "List of books written by the author"
+          }
+        },
+        "required": ["author", "books"],
+        "additionalProperties": false
+      }
+    }
+  }
+}'

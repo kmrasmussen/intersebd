@@ -1,27 +1,35 @@
 {
   "compilerOptions": {
-    "lib": ["dom", "dom.iterable", "esnext"],
-    "allowJs": true,
-    "target": "ES6",
+    "target": "ESNext", // Use ESNext for modern syntax
+    "lib": ["DOM", "DOM.Iterable", "ESNext"],
+    "module": "ESNext",
     "skipLibCheck": true,
-    "strict": true,
-    "noEmit": true,
-    "esModuleInterop": true,
-    "module": "esnext",
+
+    /* Bundler mode */
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true, // If using TS 5.0+
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "jsx": "preserve",
-    "incremental": true,
-    "plugins": [
-      {
-        "name": "next"
-      }
-    ],
+    "noEmit": true, // Vite handles emission, keep this
+    "jsx": "react-jsx", // Use standard React JSX transform
+
+    /* Linting */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+
+    /* Path Aliases */
+    "baseUrl": ".", // Keep baseUrl
     "paths": {
-      "@/*": ["./*"]
-    }
+      "@/*": ["./src/*"] // Point '@' alias to the 'src' directory
+    },
+
+    "allowJs": true, // Keep if you have JS files
+    "esModuleInterop": true, // Keep for compatibility
+    "forceConsistentCasingInFileNames": true // Good practice
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+  // Update include paths
+  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"],
+  "exclude": ["node_modules", "dist", ".next"] // Exclude build output and leftover Next.js type files
 }

@@ -1,54 +1,60 @@
-import { Link, useLocation } from "react-router-dom";
-import { cn } from "@/lib/utils";
+"use client"
 
+import { useState } from "react"
+import { CodeExample } from "@/components/code-example"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { DownloadDatasetComponent } from "@/components/download-dataset-component"
+import { SchemaEditorComponent } from "@/components/schema-editor-component"
+
+// Define props interface to accept projectId
 interface PageTabsProps {
   projectId: string;
 }
 
+// Accept projectId as a prop
 export function PageTabs({ projectId }: PageTabsProps) {
-  const location = useLocation(); // Use React Router hook
-  const pathname = location.pathname;
+  const [activeTab, setActiveTab] = useState<"api-call" | "schema-editor" | "finetune">("api-call")
 
-  // Helper to construct project-specific paths
-  const getProjectPath = (path: string) => {
-    if (!projectId) return path;
-    const cleanPath = path.startsWith("/") ? path : `/${path}`;
-    return `/${projectId}${cleanPath === "/" ? "" : cleanPath}`;
-  };
-
-  const tabs = [
-    { name: "Requests Overview", path: "/" },
-    { name: "Caller", path: "/caller" },
-    { name: "JSON Schema", path: "/json-schema" },
-    { name: "Generate Dataset", path: "/generate-dataset" },
-  ];
+  // You can now use the projectId prop within this component if needed
+  console.log("Project ID in PageTabs:", projectId);
 
   return (
-    <div className="mb-6 border-b border-gray-200">
-      <nav className="-mb-px flex space-x-8" aria-label="Tabs">
-        {tabs.map((tab) => {
-          const fullPath = getProjectPath(tab.path);
-          // Determine if the current path matches the tab's path
-          // For the root path, check for exact match. For others, check if it startsWith.
-          const isActive = tab.path === "/" ? pathname === fullPath : pathname.startsWith(fullPath);
+    <>
+      <div className="mb-4">
+        <Tabs
+          value={activeTab}
+          onValueChange={(value) => setActiveTab(value as "api-call" | "schema-editor" | "finetune")}
+        >
+          <TabsList>
+            <TabsTrigger value="api-call">API Call</TabsTrigger>
+            <TabsTrigger value="schema-editor">Schema Editor</TabsTrigger>
+            <TabsTrigger value="finetune">Finetune</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
 
-          return (
-            <Link
-              key={tab.name}
-              to={fullPath} // Use 'to' prop
-              className={cn(
-                isActive
-                  ? "border-indigo-500 text-indigo-600"
-                  : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300",
-                "whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm"
-              )}
-              aria-current={isActive ? "page" : undefined}
-            >
-              {tab.name}
-            </Link>
-          );
-        })}
-      </nav>
-    </div>
-  );
+      {/* Pass projectId down to child components if they need it */}
+      {activeTab === "api-call" ? (
+        <CodeExample
+          defaultPrompt="What is the capital of France?"
+          title="Quick API Call"
+          // projectId={projectId} // Uncomment if CodeExample needs it
+        />
+      ) : activeTab === "schema-editor" ? (
+        <SchemaEditorComponent
+          title="Quick Schema Edit"
+          // projectId={projectId} // Uncomment if SchemaEditorComponent needs it
+        />
+      ) : (
+        <DownloadDatasetComponent
+          title="Quick Dataset Download"
+          description="Download JSONL datasets for fine-tuning based on your annotated responses."
+          sftAnnotatedResponses={5}
+          dpoAnnotatedResponses={3}
+          requiredResponses={20}
+          // projectId={projectId} // Uncomment if DownloadDatasetComponent needs it
+        />
+      )}
+    </>
+  )
 }

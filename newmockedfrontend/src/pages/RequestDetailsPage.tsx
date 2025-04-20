@@ -1,44 +1,31 @@
-import { RequestDetails } from "@/components/request-details"
+import { useParams } from 'react-router-dom';
+import { RequestDetails } from "@/components/request-details";
 
-// Function to get the list of IDs to pre-render
-// Replace this with your actual logic
-async function getRequestIdsForStaticGeneration() {
-  // --- IMPORTANT ---
-  // You MUST provide the actual list of IDs here.
-  // This could be from an API call (if accessible at build time),
-  // reading a file, or a hardcoded list if they are known.
-  // If the IDs are purely dynamic and unknown at build time,
-  // static export might not work for this route without changes.
-  //
-  // Example hardcoded list:
-  return [
-    { id: 'some-known-id-1' },
-    { id: 'some-known-id-2' },
-    { id: 'f3ef3f5e-09c2-4a30-82a2-ecf4f460a1d9' }
-    // Add all IDs you want to pre-render
-  ]
-
-  // Example fetching (if possible during build):
-  // try {
-  //   const res = await fetch('https://your-api.com/requests/ids'); // Ensure this endpoint exists and is reachable by the build server
-  //   const ids = await res.json(); // Assuming it returns [{ id: '...' }, ...]
-  //   return ids;
-  // } catch (error) {
-  //   console.error("Failed to fetch request IDs for static generation:", error);
-  //   return []; // Return empty array on error to avoid build failure, or handle differently
-  // }
+// Define the expected shape of the URL parameters
+interface RequestDetailsParams {
+  projectId: string;
+  requestId: string;
+  [key: string]: string | undefined; // Allow other potential params
 }
 
-// Add this function to define static paths
-export async function generateStaticParams() {
-  const paths = await getRequestIdsForStaticGeneration();
-  return paths;
-}
+export default function RequestDetailsPage() {
+  // Use the useParams hook to get the dynamic segments from the URL
+  // The keys (projectId, requestId) must match the route definition in App.tsx
+  const { projectId, requestId } = useParams<RequestDetailsParams>();
+  console.log("Project ID:", projectId);
+  // Check if requestId exists before rendering RequestDetails
+  if (!requestId) {
+    // Handle the case where requestId is missing, e.g., show an error or redirect
+    return <div>Error: Request ID not found in URL.</div>;
+  }
 
-export default function RequestDetailsPage({ params }: { params: { id: string } }) {
+  // Optionally use projectId if RequestDetails needs it
+  // console.log("Project ID:", projectId);
+
   return (
     <div className="container mx-auto py-4">
-      <RequestDetails id={params.id} />
+      {/* Pass the extracted requestId to the RequestDetails component */}
+      <RequestDetails id={requestId} />
     </div>
-  )
+  );
 }

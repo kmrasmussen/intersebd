@@ -102,7 +102,9 @@ export function RequestsOverviewV2({ projectId }: { projectId: string }) {
       setIsLoading(true)
       setError(null)
       try {
-        const apiUrl = `http://127.0.0.1:8000/mock-next/${projectId}/requests-summary`
+        // Use environment variable for the base URL
+        const baseUrl = import.meta.env.VITE_API_BASE_URL;
+        const apiUrl = `${baseUrl}/mock-next/${projectId}/requests-summary`
         console.log("Fetching from:", apiUrl)
 
         const response = await fetch(apiUrl)
@@ -110,6 +112,7 @@ export function RequestsOverviewV2({ projectId }: { projectId: string }) {
           throw new Error(`HTTP error! status: ${response.status}`)
         }
         const data: MockRequest[] = await response.json()
+        console.log("data from overview", data)
         setRequests(data)
       } catch (e: any) {
         console.error("Failed to fetch requests:", e)
@@ -130,13 +133,17 @@ export function RequestsOverviewV2({ projectId }: { projectId: string }) {
       setDetailsError(null)
       setCurrentDetails(null)
       try {
-        const apiUrl = `http://127.0.0.1:8000/mock-next/${projectId}/requests/${id}`
+        // Use environment variable for the base URL
+        const baseUrl = import.meta.env.VITE_API_BASE_URL;
+        const apiUrl = `${baseUrl}/mock-next/${projectId}/requests/${id}`
         console.log("Fetching details from:", apiUrl)
         const response = await fetch(apiUrl)
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`)
         }
         const data: MockRequestDetail = await response.json()
+        console.log("data", data)
+        console.log('data for a specific request', data)
         setCurrentDetails(data)
       } catch (e: any) {
         console.error("Failed to fetch request details:", e)

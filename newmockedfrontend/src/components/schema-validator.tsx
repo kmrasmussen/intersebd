@@ -32,7 +32,8 @@ export function SchemaValidator({ schema, onValidate }: SchemaValidatorProps) { 
         setValidationResult({ valid: true })
         onValidate(true)
       } else {
-        const errorMessages = validate.errors?.map(err => `${err.instancePath || "input"} ${err.message}`).join(", ")
+        // Add ErrorObject type to err parameter
+        const errorMessages = validate.errors?.map((err: ErrorObject) => `${err.instancePath || "input"} ${err.message}`).join(", ")
         setValidationResult({ valid: false, message: errorMessages || "Invalid JSON against schema" })
         onValidate(false, validate.errors)
       }

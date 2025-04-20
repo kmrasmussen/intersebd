@@ -27,7 +27,8 @@
 
     "allowJs": true, // Keep if you have JS files
     "esModuleInterop": true, // Keep for compatibility
-    "forceConsistentCasingInFileNames": true // Good practice
+    "forceConsistentCasingInFileNames": true, // Good practice
+    "types": ["vite/client"] // Add or update this line
   },
   // Update include paths
   "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"],

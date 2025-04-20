@@ -4,7 +4,7 @@ import ProjectHomePage from "./pages/ProjectHomePage"; // We'll move this
 import CallerPage from "./pages/CallerPage"; // We'll move/create this
 import JsonSchemaPage from "./pages/JsonSchemaPage"; // We'll move/create this
 import GenerateDatasetPage from "./pages/GenerateDatasetPage"; // We'll move/create this
-//import RequestDetailPage from "./pages/RequestDetailPage"; // We'll move/create this
+import RequestDetailsPage from "./pages/RequestDetailsPage"; // Corrected import path
 
 function App() {
   return (
@@ -17,6 +17,8 @@ function App() {
           <Route path=":projectId/caller" element={<CallerPage />} />
           <Route path=":projectId/json-schema" element={<JsonSchemaPage />} />
           <Route path=":projectId/generate-dataset" element={<GenerateDatasetPage />} />
+          {/* Added route for request details */}
+          <Route path=":projectId/requests/:requestId" element={<RequestDetailsPage />} />
 
           {/* Optional: Add an index route for the root if needed */}
           {/* <Route index element={<SomeRootPageComponent />} /> */}

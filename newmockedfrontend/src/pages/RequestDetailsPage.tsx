@@ -1,5 +1,5 @@
 import { useParams } from 'react-router-dom';
-import { RequestDetails } from "@/components/request-details";
+import { RequestDetails } from "@/components/request-details"; // Assuming this path is correct
 
 // Define the expected shape of the URL parameters
 interface RequestDetailsParams {
@@ -9,23 +9,20 @@ interface RequestDetailsParams {
 }
 
 export default function RequestDetailsPage() {
-  // Use the useParams hook to get the dynamic segments from the URL
-  // The keys (projectId, requestId) must match the route definition in App.tsx
   const { projectId, requestId } = useParams<RequestDetailsParams>();
-  console.log("Project ID:", projectId);
-  // Check if requestId exists before rendering RequestDetails
-  if (!requestId) {
-    // Handle the case where requestId is missing, e.g., show an error or redirect
-    return <div>Error: Request ID not found in URL.</div>;
+
+  // Add checks for both projectId and requestId
+  if (!projectId || !requestId) {
+    // Handle the case where either ID is missing
+    return <div>Error: Project ID or Request ID not found in URL.</div>;
   }
 
-  // Optionally use projectId if RequestDetails needs it
-  // console.log("Project ID:", projectId);
+  console.log("RequestDetailsPage - Project ID:", projectId, "Request ID:", requestId);
 
   return (
     <div className="container mx-auto py-4">
-      {/* Pass the extracted requestId to the RequestDetails component */}
-      <RequestDetails id={requestId} />
+      {/* Pass both projectId and requestId to the RequestDetails component */}
+      <RequestDetails projectId={projectId} requestId={requestId} />
     </div>
   );
 }

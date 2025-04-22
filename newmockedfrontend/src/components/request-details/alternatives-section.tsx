@@ -1,30 +1,40 @@
 "use client"
 
-import { Button } from "@/components/ui/button"; // Corrected path
-import { ResponseCard } from "@/components/response-card"; // Corrected path
+import { Button } from "@/components/ui/button";
+import { ResponseCard } from "@/components/response-card";
 
+// Ensure Response type includes annotation_target_id
 type Response = {
-  id: string
-  content: string
-  model: string
-  created: string
+  id: string;
+  annotation_target_id?: string | null; // <-- Ensure this is present
+  content: string;
+  model: string;
+  created: string;
   annotations: Array<{
-    reward: number
-    by: string
-    at: string
-  }>
-  metadata?: Record<string, any>
-  is_json: boolean
-  obeys_schema: boolean | null
-}
+    reward: number;
+    by: string; // Consider if this should be Optional<string> or Optional<uuid.UUID>
+    at: string;
+  }>;
+  metadata?: Record<string, any>;
+  is_json: boolean;
+  obeys_schema: boolean | null;
+};
 
+// Add projectId to props
 type AlternativesSectionProps = {
-  alternatives: Response[]
-  showAlternatives: boolean
-  setShowAlternatives: (show: boolean) => void
-}
+  alternatives: Response[];
+  showAlternatives: boolean;
+  setShowAlternatives: (show: boolean) => void;
+  projectId: string; // <-- ADD projectId prop type
+};
 
-export function AlternativesSection({ alternatives, showAlternatives, setShowAlternatives }: AlternativesSectionProps) {
+// Update function signature to accept projectId
+export function AlternativesSection({
+  alternatives,
+  showAlternatives,
+  setShowAlternatives,
+  projectId, // <-- ACCEPT projectId prop
+}: AlternativesSectionProps) {
   return (
     <>
       <div className="flex items-center justify-between mb-2">
@@ -37,7 +47,13 @@ export function AlternativesSection({ alternatives, showAlternatives, setShowAlt
       {showAlternatives && alternatives.length > 0 && (
         <div className="space-y-4">
           {alternatives.map((response, index) => (
-            <ResponseCard key={index} response={response} isAlternative />
+            // Pass projectId down to ResponseCard
+            <ResponseCard
+              key={response.id || index} // Use response.id if available and unique
+              response={response}
+              isAlternative
+              projectId={projectId} // <-- PASS projectId here
+            />
           ))}
         </div>
       )}
@@ -48,5 +64,5 @@ export function AlternativesSection({ alternatives, showAlternatives, setShowAlt
         </div>
       )}
     </>
-  )
+  );
 }

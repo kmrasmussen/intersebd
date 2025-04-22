@@ -1,3 +1,4 @@
+'''
 import secrets
 from fastapi import APIRouter, FastAPI, Depends, HTTPException, Request, status
 from pydantic import BaseModel
@@ -289,3 +290,4 @@ async def find_openrouter_key_by_intercept_key(intercept_key_value: str, session
     return openrouter_key_record
 
 # ... rest of the file ...
+'''

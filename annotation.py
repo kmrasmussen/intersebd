@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field # Import BaseModel and Field
 from datetime import datetime
 
 # Assuming models and get_db are accessible
-from models import CompletionResponse, CompletionAnnotation, AnnotationTarget, InterceptKey, CompletionsRequest
+from models import CompletionResponse, CompletionAnnotation, AnnotationTarget, CompletionsRequest
 from database import get_db
 
 import logging

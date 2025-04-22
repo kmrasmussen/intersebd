@@ -30,6 +30,7 @@ interface Annotation { reward: number; by: string; at: string; }
 
 interface ResponseDetail {
   id: string;
+  annotation_target_id?: string | null;
   content: string;
   model: string;
   created: string;
@@ -107,7 +108,9 @@ export function RequestsOverviewV2({ projectId }: { projectId: string }) {
         const apiUrl = `${baseUrl}/mock-next/${projectId}/requests-summary`
         console.log("Fetching from:", apiUrl)
 
-        const response = await fetch(apiUrl)
+        const response = await fetch(apiUrl, {
+          credentials: 'include' // <--- ADD THIS LINE
+        })
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`)
         }
@@ -137,7 +140,9 @@ export function RequestsOverviewV2({ projectId }: { projectId: string }) {
         const baseUrl = import.meta.env.VITE_API_BASE_URL;
         const apiUrl = `${baseUrl}/mock-next/${projectId}/requests/${id}`
         console.log("Fetching details from:", apiUrl)
-        const response = await fetch(apiUrl)
+        const response = await fetch(apiUrl, {
+          credentials: 'include' // <--- ADD THIS LINE
+        })
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`)
         }
@@ -262,7 +267,10 @@ export function RequestsOverviewV2({ projectId }: { projectId: string }) {
 
                           <div className="mb-6">
                             <h3 className="font-medium mb-2">Response:</h3>
-                            <ResponseSection response={currentDetails.mainResponse} />
+                            <ResponseSection
+                              response={currentDetails.mainResponse}
+                              projectId={projectId}
+                            />
                           </div>
 
                           <div className="mb-6">
@@ -270,6 +278,7 @@ export function RequestsOverviewV2({ projectId }: { projectId: string }) {
                               alternatives={currentDetails.alternativeResponses}
                               showAlternatives={showAlternatives}
                               setShowAlternatives={setShowAlternatives}
+                              projectId={projectId}
                             />
                           </div>
 

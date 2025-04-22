@@ -1,48 +1,49 @@
 services:
-  postgres:
-    image: postgres:15
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: postgres
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-  
-  pgadmin:
-    image: dpage/pgadmin4
-    environment:
-      PGADMIN_DEFAULT_EMAIL: admin@example.com
-      PGADMIN_DEFAULT_PASSWORD: admin
-      PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: "False"
-      PGADMIN_CONFIG_WTF_CSRF_CHECK_DEFAULT: "False"
-    ports:
-      - "5050:80"
-    depends_on:
-      - postgres
-    
+  # postgres:
+  #   image: postgres:15
+  #   environment:
+  #     POSTGRES_USER: postgres
+  #     POSTGRES_PASSWORD: postgres
+  #     POSTGRES_DB: postgres
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U postgres"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 5
+  #
+  # pgadmin:
+  #   image: dpage/pgadmin4
+  #   environment:
+  #     PGADMIN_DEFAULT_EMAIL: admin@example.com
+  #     PGADMIN_DEFAULT_PASSWORD: admin
+  #     PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: "False"
+  #     PGADMIN_CONFIG_WTF_CSRF_CHECK_DEFAULT: "False"
+  #   ports:
+  #     - "5050:80"
+  #   depends_on:
+  #     - postgres
+
   intercept_backend:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
       - "9003:9003"
+      - "5678:5678"
     env_file:
       - .env
     volumes:
       - .:/app
-    depends_on:
-      postgres:
-        condition: service_healthy
+    #depends_on:
+    #  postgres:
+    #    condition: service_healthy
     command: >
-      sh -c "alembic upgrade head && 
-             uvicorn main:app --host 0.0.0.0 --port 9003 --reload --log-level debug"
+      sh -c "alembic upgrade head &&
+             python -Xfrozen_modules=off -m debugpy --listen 0.0.0.0:5678 -m uvicorn main:app --host 0.0.0.0 --port 9003 --log-level debug --reload"
 
-volumes:
-  postgres_data:
+#volumese
+#  postgres_data:

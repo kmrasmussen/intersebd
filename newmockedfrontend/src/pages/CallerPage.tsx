@@ -4,8 +4,16 @@ import { useState } from "react"
 import { Button } from "@/components/ui/button" // Corrected path
 import { CheckCircle2, Copy } from "lucide-react"
 import { CodeExample } from "@/components/code-example" // Corrected path
+import { useParams } from "react-router-dom" // Import useParams
 
 export default function CallerPage() {
+  const { projectId } = useParams<{ projectId: string }>() // Get projectId from URL
+
+  if (!projectId) {
+    // Handle case where projectId is not available (optional, depends on routing setup)
+    return <div>Error: Project ID not found in URL.</div>
+  }
+
   const [copied, setCopied] = useState<string | null>(null)
 
   const endpoint = "http://localhost:9003/v1/chat/completions"
@@ -18,10 +26,15 @@ export default function CallerPage() {
   }
 
   return (
-    <div className="container mx-auto py-4">
-      <h1 className="text-2xl font-bold mb-6">Caller</h1>
+    <div className="p-4 md:p-6">
+      <h1 className="text-2xl font-semibold mb-4">API Caller</h1>
+      <p className="mb-6 text-gray-600">
+        Use the code examples below to integrate the API into your application.
+        The API key provided is specific to this project.
+      </p>
 
-      <CodeExample defaultPrompt="What is 2+2?" title="API Call Example" />
+      {/* *** Pass projectId to CodeExample *** */}
+      <CodeExample projectId={projectId} title="Chat Completions Example" />
 
       {/* Configuration Fields */}
       <div className="space-y-4 mt-8">

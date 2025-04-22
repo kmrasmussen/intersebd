@@ -26,6 +26,14 @@ class User(Base):
     # Relationship to projects created by this user
     created_projects = relationship("CompletionProject", back_populates="creator")
 
+    project_memberships = relationship("ProjectMembership", back_populates="user")
+    projects = relationship(
+        "CompletionProject",
+        secondary="project_memberships",
+        back_populates="members",
+        viewonly=True
+    )
+
 class CompletionProject(Base):
     __tablename__ = "completion_projects"
 
@@ -36,27 +44,50 @@ class CompletionProject(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     is_active = Column(Boolean, default=True)
 
-    # Link to the creator User. Nullable and SET NULL on delete to allow project persistence.
     creator_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
 
-    # Relationship back to the User who created it
     creator = relationship("User", back_populates="created_projects")
 
-    # Relationship to call keys associated with this project. Delete keys if project is deleted.
+    project_memberships = relationship("ProjectMembership", back_populates="project", cascade="all, delete-orphan")
+    members = relationship(
+        "User",
+        secondary="project_memberships",
+        back_populates="projects",
+        viewonly=True
+    )
+
+    completion_requests = relationship("CompletionsRequest", back_populates="project")
+
     call_keys = relationship("CompletionProjectCallKeys", back_populates="project", cascade="all, delete-orphan")
 
+class ProjectMembership(Base):
+    __tablename__ = 'project_memberships'
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey('users.id'), primary_key=True)
+    project_id = Column(PG_UUID(as_uuid=True), ForeignKey('completion_projects.id'), primary_key=True)
+    role = Column(String, nullable=False, default='viewer', server_default='viewer')
+    added_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="project_memberships")
+    project = relationship("CompletionProject", back_populates="project_memberships")
+
 class CompletionProjectCallKeys(Base):
-    __tablename__ = "completion_project_call_keys" # Table name matches class name convention
+    __tablename__ = "completion_project_call_keys"
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    key = Column(String, unique=True, index=True) # The actual API key value
+    key = Column(String, unique=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     is_active = Column(Boolean, default=True)
 
-    # Link to the project this key belongs to. Must belong to a project.
     project_id = Column(PG_UUID(as_uuid=True), ForeignKey("completion_projects.id"), nullable=False, index=True)
 
-    # Relationship back to the CompletionProject
     project = relationship("CompletionProject", back_populates="call_keys")
+
+    # Add relationship to OpenRouterGuestKey (one-to-one)
+    openrouter_guest_key = relationship(
+        "OpenRouterGuestKey",
+        back_populates="completion_project_call_key",
+        uselist=False, # Indicates a one-to-one relationship from this side
+        cascade="all, delete-orphan" # Optional: Delete linked OR key if this key is deleted
+    )
 
 class AnnotationTarget(Base):
     """
@@ -87,39 +118,12 @@ class AnnotationTarget(Base):
         back_populates="annotation_targets"
     )
 
-class InterceptKey(Base):
-    __tablename__ = "intercept_keys"
-
-    user_id = Column(String, index=True)
-    intercept_key = Column(String(200), nullable=False, unique=True, primary_key=True) 
-    viewing_id = Column(String, unique=True, index=True, default=lambda: str(uuid.uuid4()))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    is_valid = Column(Boolean, default=True, nullable=False)
-    user_is_guest = Column(Boolean, default=False, nullable=True)
-    
-class RequestsLog(Base):
-    __tablename__ = "requests_log"
-
-    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    log_timestamp = Column(DateTime(timezone=True), server_default=func.now())
-    intercept_key = Column(String(200), ForeignKey("intercept_keys.intercept_key"), index=True) 
-    request_method = Column(String)
-    request_url = Column(String)
-    request_headers = Column(JSON)
-    request_body = Column(JSON, nullable=True)
-    response_status_code = Column(Integer, nullable=True)
-    response_headers = Column(JSON, nullable=True)
-    response_body = Column(JSON, nullable=True)
-
-    completion_request = relationship("CompletionsRequest", back_populates="request_log", uselist=False)
-    key_info = relationship("InterceptKey")
-
 class CompletionAlternative(Base):
     __tablename__ = "completion_alternatives"
 
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     original_completion_request_id = Column(PG_UUID(as_uuid=True), ForeignKey("completions_requests.id"))
-    intercept_key = Column(String(200), ForeignKey("intercept_keys.intercept_key"), index=True)
+    project_id = Column(PG_UUID(as_uuid=True), ForeignKey("completion_projects.id"), index=True, nullable=False)
     alternative_content = Column(Text, nullable=False)
     rater_id = Column(String, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -127,8 +131,8 @@ class CompletionAlternative(Base):
     annotation_target_id = Column(PG_UUID(as_uuid=True), ForeignKey("annotation_targets.id"), unique=True, nullable=False)
     annotation_target = relationship("AnnotationTarget", back_populates="completion_alternative")
 
-    original_completion_request = relationship("CompletionsRequest", back_populates="alternatives", uselist=False)
-    submitted_via_intercept_key = relationship("InterceptKey")
+    original_completion_request = relationship("CompletionsRequest", back_populates="alternatives")
+    project = relationship("CompletionProject")
     
     __table_args__ = (UniqueConstraint("original_completion_request_id", "alternative_content", name='uq_alternative_content_per_request'),)
 
@@ -136,15 +140,14 @@ class CompletionsRequest(Base):
     __tablename__ = "completions_requests"
 
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    request_log_id = Column(PG_UUID(as_uuid=True), ForeignKey("requests_log.id"))
-    intercept_key = Column(String(200), ForeignKey("intercept_keys.intercept_key"), index=True)
+    project_id = Column(PG_UUID(as_uuid=True), ForeignKey("completion_projects.id"), index=True, nullable=False)
     messages = Column(JSON)
     messages_hash = Column(String)
     model = Column(String)
     response_format = Column(JSON)
     response_format_hash = Column(String)
 
-    request_log = relationship("RequestsLog", back_populates="completion_request", uselist=False)
+    project = relationship("CompletionProject", back_populates="completion_requests")
 
     alternatives = relationship(
         "CompletionAlternative",
@@ -152,8 +155,12 @@ class CompletionsRequest(Base):
         cascade="all, delete-orphan"
     )
 
-    completion_response = relationship("CompletionResponse", back_populates="completion_request", uselist=False)
-    key_info = relationship("InterceptKey")
+    completion_response = relationship(
+        "CompletionResponse",
+        back_populates="completion_request",
+        uselist=False,
+        cascade="all, delete-orphan"
+    )
 
 class CompletionsRaterNotification(Base):
     __tablename__ = "completions_rater_notifications"
@@ -161,7 +168,6 @@ class CompletionsRaterNotification(Base):
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
     rater_id = Column(String)
     content = Column(Text) 
-    intercept_key = Column(String(200), ForeignKey("intercept_keys.intercept_key")) 
     completion_response_id = Column(String, ForeignKey("completion_responses.id"))
 
 class CompletionResponse(Base):
@@ -178,12 +184,10 @@ class CompletionResponse(Base):
 
     completion_request = relationship("CompletionsRequest", back_populates="completion_response", uselist=False)
 
-    # Usage statistics
     prompt_tokens = Column(Integer)
     completion_tokens = Column(Integer)
     total_tokens = Column(Integer)
 
-    # completion choice
     choice_finish_reason = Column(String)
     choice_role = Column(String) 
     choice_content = Column(Text)
@@ -193,14 +197,23 @@ class CompletionAnnotation(Base):
     
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
-    rater_id = Column(String)
-    reward = Column(Float) 
+
+    user_id = Column(
+        PG_UUID(as_uuid=True),
+        ForeignKey('users.id', ondelete="SET NULL"),
+        nullable=True,
+        index=True
+    )
+
+    reward = Column(Float)
     annotation_metadata = Column(JSON)
+
+    user = relationship("User")
 
     annotation_targets = relationship(
         "AnnotationTarget",
-        secondary=annotation_target_annotation_link, # Use the association table
-        back_populates="annotations" # Matches relationship name in AnnotationTarget
+        secondary=annotation_target_annotation_link,
+        back_populates="annotations"
     )
 
 class OpenRouterGuestKey(Base):
@@ -217,7 +230,23 @@ class OpenRouterGuestKey(Base):
     or_key = Column(String, nullable=False)
     or_usage = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
-    user_id = Column(String, nullable=True)
+
+    # Foreign key to link to a specific project call key
+    completion_project_call_key_id = Column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("completion_project_call_keys.id", ondelete="SET NULL"), # Optional: Set FK to NULL if call key is deleted
+        nullable=True,
+        unique=True # Enforce one-to-one at DB level
+    )
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey('users.id', ondelete="SET NULL"), nullable=True)
+
+    user = relationship("User") # Relationship to User
+
+    # Add relationship back to CompletionProjectCallKeys
+    completion_project_call_key = relationship(
+        "CompletionProjectCallKeys",
+        back_populates="openrouter_guest_key"
+    )
 
 class AgentWidget(Base):
     __tablename__ = "agent_widgets"
@@ -225,7 +254,8 @@ class AgentWidget(Base):
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     cors_origin = Column(String, nullable=False)
     tools = Column(JSON, nullable=False)
-    user_id = Column(String, nullable=True)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey('users.id', ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     n_calls = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
+    user = relationship("User")

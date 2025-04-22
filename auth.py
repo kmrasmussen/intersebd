@@ -7,6 +7,7 @@ from authlib.integrations.starlette_client import OAuth
 from config import settings
 from sqlalchemy.ext.asyncio import AsyncSession  # Changed to AsyncSession
 from sqlalchemy.future import select  # Use select for async queries
+from sqlalchemy.orm import aliased  # Needed for checking membership
 from database import get_db  # Import your DB session getter
 import models  # Import your models
 import uuid  # Import uuid
@@ -58,51 +59,71 @@ router = APIRouter(
 
 # --- Guest Cookie Name ---
 GUEST_USER_ID_COOKIE = "guest_user_id"
+GUEST_USER_ID_HEADER = "X-Guest-User-Id"  # Define the header name
 
 # --- Async get_current_user ---
-async def get_current_user(request: Request, db: AsyncSession = Depends(get_db)) -> Optional[models.User]: # Changed to async def, type hint AsyncSession
-    print(f"get_current_user: All cookies: {request.cookies}") # DEBUG
-    guest_user_id_str = request.cookies.get(GUEST_USER_ID_COOKIE)
-    print(f"get_current_user: Found guest cookie value: {guest_user_id_str}") # DEBUG
+async def get_current_user(request: Request, db: AsyncSession = Depends(get_db)) -> Optional[models.User]:
+    print(f"get_current_user: All cookies: {request.cookies}")  # DEBUG
+    print(f"get_current_user: All headers: {request.headers}")  # DEBUG: Log headers
 
-    if guest_user_id_str:
-        try:
-            guest_user_id = uuid.UUID(guest_user_id_str)
-            # Use async query with select
-            stmt = select(models.User).filter(models.User.id == guest_user_id)
-            result = await db.execute(stmt)
-            user = result.scalars().first() # Use scalars().first() for async result
-            if user:
-                print(f"get_current_user: Found guest user in DB: {user.id}") # DEBUG
-                return user
-            else:
-                print(f"get_current_user: Guest user ID {guest_user_id} not found in DB.") # DEBUG
-        except (ValueError, TypeError) as e:
-            print(f"get_current_user: Invalid guest user ID format in cookie: {guest_user_id_str}, Error: {e}") # DEBUG
-        except Exception as e:
-             print(f"get_current_user: Database error looking up guest user: {e}") # DEBUG
+    user_id_to_check: Optional[uuid.UUID] = None
+    source: Optional[str] = None
 
-    # Check for session-based user (Google Login) - Assuming synchronous session handling for now
-    # If session middleware is also async, this part might need adjustment too
-    user_id = request.session.get('user_id')
-    if user_id:
+    # --- Priority 1: Check Session (Google Login) ---
+    session_user_id_str = request.session.get('user_id')
+    if session_user_id_str:
         try:
-            user_uuid = uuid.UUID(user_id)
-            # Use async query
+            user_uuid = uuid.UUID(session_user_id_str)
             stmt = select(models.User).filter(models.User.id == user_uuid)
             result = await db.execute(stmt)
             user = result.scalars().first()
             if user:
-                 print(f"get_current_user: Found session user in DB: {user.id}") # DEBUG
-                 return user
+                print(f"get_current_user: Found session user in DB: {user.id}")  # DEBUG
+                return user  # Return immediately if session user found
             else:
-                 print(f"get_current_user: Session user ID {user_uuid} not found in DB.") # DEBUG
+                print(f"get_current_user: Session user ID {user_uuid} not found in DB.")  # DEBUG
         except (ValueError, TypeError) as e:
-            print(f"get_current_user: Invalid user ID format in session: {user_id}, Error: {e}") # DEBUG
+            print(f"get_current_user: Invalid user ID format in session: {session_user_id_str}, Error: {e}")  # DEBUG
         except Exception as e:
-             print(f"get_current_user: Database error looking up session user: {e}") # DEBUG
+            print(f"get_current_user: Database error looking up session user: {e}")  # DEBUG
 
-    print("get_current_user: No valid user found, returning None.") # DEBUG
+    # --- Priority 2: Check Guest Cookie ---
+    guest_user_id_str = request.cookies.get(GUEST_USER_ID_COOKIE)
+    if guest_user_id_str:
+        try:
+            guest_user_id = uuid.UUID(guest_user_id_str)
+            stmt = select(models.User).filter(models.User.id == guest_user_id)
+            result = await db.execute(stmt)
+            user = result.scalars().first()
+            if user:
+                print(f"get_current_user: Found guest user in DB: {user.id}")  # DEBUG
+                return user  # Return immediately if guest user found
+            else:
+                print(f"get_current_user: Guest user ID {guest_user_id} not found in DB.")  # DEBUG
+        except (ValueError, TypeError) as e:
+            print(f"get_current_user: Invalid guest user ID format in cookie: {guest_user_id_str}, Error: {e}")  # DEBUG
+        except Exception as e:
+            print(f"get_current_user: Database error looking up guest user: {e}")  # DEBUG
+
+    # --- Priority 3: Check Guest Header ---
+    guest_user_id_header = request.headers.get(GUEST_USER_ID_HEADER)
+    if guest_user_id_header:
+        try:
+            guest_user_id = uuid.UUID(guest_user_id_header)
+            stmt = select(models.User).filter(models.User.id == guest_user_id)
+            result = await db.execute(stmt)
+            user = result.scalars().first()
+            if user:
+                print(f"get_current_user: Found guest user in DB via header: {user.id}")  # DEBUG
+                return user  # Return immediately if guest user found via header
+            else:
+                print(f"get_current_user: Guest user ID {guest_user_id} not found in DB via header.")  # DEBUG
+        except (ValueError, TypeError) as e:
+            print(f"get_current_user: Invalid guest user ID format in header: {guest_user_id_header}, Error: {e}")  # DEBUG
+        except Exception as e:
+            print(f"get_current_user: Database error looking up guest user via header: {e}")  # DEBUG
+
+    print("get_current_user: No valid user found, returning None.")  # DEBUG
     return None
 
 @router.get("/login/google")
@@ -276,3 +297,34 @@ async def create_guest_user(response: Response, db: AsyncSession = Depends(get_d
         path="/"
     )
     return GuestUserResponse(guest_user_id=guest_user.id)
+
+# --- Reusable Dependency for Project Membership Verification ---
+async def verify_project_membership(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: models.User = Depends(get_current_user) # Ensures user is authenticated first
+) -> models.ProjectMembership: # Return the membership object for potential role checks later
+    """
+    Dependency that verifies if the current user is a member of the specified project.
+    Raises HTTPException 404 if not a member or project doesn't exist.
+    """
+    if not current_user:
+        # Should not happen if get_current_user is working, but good practice
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    stmt = select(models.ProjectMembership).filter(
+        models.ProjectMembership.project_id == project_id,
+        models.ProjectMembership.user_id == current_user.id
+    )
+    result = await db.execute(stmt)
+    membership = result.scalars().first()
+
+    if not membership:
+        # Use 404 to avoid revealing project existence if user lacks access
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project with id {project_id} not found or access denied."
+        )
+
+    # Return the membership object - contains user_id, project_id, role
+    return membership

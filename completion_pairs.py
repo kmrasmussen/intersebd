@@ -1,3 +1,4 @@
+'''
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +9,7 @@ from pydantic import BaseModel, Field # Import BaseModel and Field
 from datetime import datetime # Import datetime
 
 from database import get_db
-from models import CompletionsRequest, CompletionResponse, RequestsLog, InterceptKey # Import necessary models
+from models import CompletionsRequest, CompletionResponse, RequestsLog, # Import necessary models
 import logging
 
 logger = logging.getLogger(__name__)
@@ -127,3 +128,4 @@ async def list_completion_pairs( # Renamed function in previous step, ensure con
         log_key = intercept_key_to_return or "unknown (lookup failed)"
         logger.exception(f"Error retrieving completion pairs for viewing ID {viewing_id} (Intercept Key: {log_key}): {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error while retrieving completion pairs.")
+'''

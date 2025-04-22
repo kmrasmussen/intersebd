@@ -19,14 +19,12 @@ from sqlalchemy import func, select, text # Import text for potential raw SQL ne
 from fastapi.middleware.cors import CORSMiddleware # Import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.staticfiles import StaticFiles # Import StaticFiles
+from sqlalchemy.orm import selectinload, joinedload # Ensure selectinload and joinedload are imported
+from sqlalchemy.exc import SQLAlchemyError # Import SQLAlchemyError
 
 # imports from solution
 from auth import router as auth_router
-from intercept_keys import public_router as intercept_keys_public_router
-from intercept_keys import authenticated_router as intercept_keys_authenticated_router
-from intercept_keys import find_openrouter_key_by_intercept_key
 from provider_keys import router as provider_keys_router
-from completion_pairs import router as completion_pairs_router
 from completion_alternatives import router as completion_alternatives_router
 from agent_widget import router as agent_widget_router # Import the new router
 from corsanywhere import cors_anywhere_app # Import the CORS Anywhere app
@@ -35,6 +33,8 @@ from config import settings
 from finetuning import router as finetuning_router
 from nextmockingrouter import router as nextmocking_router
 from completion_projects import router as completion_projects_router
+from completion_project_call_keys import router as completion_project_call_keys_router
+
 import logging
 
 # Configure logging
@@ -87,16 +87,14 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)  
-app.include_router(intercept_keys_public_router)
-app.include_router(intercept_keys_authenticated_router)
 app.include_router(provider_keys_router)
-app.include_router(completion_pairs_router)
 app.include_router(completion_alternatives_router)
 app.include_router(agent_widget_router) # Include the new router
 app.include_router(annotation_router)
 app.include_router(finetuning_router)
 app.include_router(nextmocking_router)
 app.include_router(completion_projects_router)
+app.include_router(completion_project_call_keys_router)
 
 app.mount("/api/cors-anywhere", cors_anywhere_app)
 
@@ -221,8 +219,6 @@ async def create_rater_notification(request: CompletionsRaterNotificationRequest
       logger.error(f"Error creating notification: {e}")
       raise HTTPException(status_code=500, detail="Internal server error while creating notification.")
 
-from sqlalchemy.orm import selectinload, joinedload # Add joinedload
-
 class CompletionChoiceDetailDto(BaseModel):
   index: int
   finish_reason: Optional[str] = None
@@ -251,7 +247,7 @@ class UniqueMessageGroup(BaseModel):
   count: int
 
   class Config:
-    from_attributes = True # Changed from orm_mode
+    from_attributes = True
 
 class CompletionsRequestDetailDto(BaseModel):
   messages: List[Dict[str, Any]]
@@ -261,14 +257,14 @@ class CompletionsRequestDetailDto(BaseModel):
   response_format_hash: Optional[str] = None
 
   class Config:
-      from_attributes = True # Changed from orm_mode
+      from_attributes = True
 
 class RaterNotificationDetailsResponseDto(BaseModel):
   notification: CompletionsRaterNotificationRequestDto # Re-use or create specific DTO
   completion_request: Optional[CompletionsRequestDetailDto] = None
   completion_response: Optional[CompletionResponseDetailDto] = None
   class Config:
-    from_attributes = True # Changed from orm_mode
+    from_attributes = True
 
 # ... existing code ...
 
@@ -386,225 +382,207 @@ async def list_rater_notifications(request: CompletionsNotificationsListRequestD
         logger.exception(f"Error listing notifications for rater ID: {request.rater_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error while listing notifications.")
 
-@app.get('/intercept/{intercept_key}/unique_request_messages', response_model=List[UniqueMessageGroup])
-# Ensure intercept_key is typed as uuid.UUID for validation
-async def get_unique_request_messages(intercept_key: uuid.UUID, session: AsyncSession = Depends(get_db)): 
-  try: # Add try/except block for better error handling
-    stmt = (
-      select(
-          CompletionsRequest.messages_hash,
-          # Aggregate messages into an array and take the first element (PostgreSQL arrays are 1-indexed)
-          func.array_agg(CompletionsRequest.messages)[1].label("messages"), 
-          func.count(CompletionsRequest.id).label("count") # Count occurrences
-      )
-      .join(RequestsLog, CompletionsRequest.request_log_id == RequestsLog.id) # Join on the foreign key
-      .where(RequestsLog.intercept_key == intercept_key) # Filter by the intercept key
-      .group_by(CompletionsRequest.messages_hash) # Group ONLY by the hash
-      .order_by(func.count(CompletionsRequest.id).desc()) # Optional: order by frequency
-    )
-    
-    result = await session.execute(stmt)
-    grouped_results = result.all() 
-
-    response_data = [
-        UniqueMessageGroup(
-            messages_hash=row.messages_hash,
-            messages=row.messages, # This should now contain the JSON array from the first element
-            count=row.count
-        )
-        for row in grouped_results
-    ]
-    
-    return response_data
-  except Exception as e:
-      logger.error(f"Error retrieving unique messages for key {intercept_key}: {e}")
-      # Consider logging the actual SQL error if available (e.g., e.orig)
-      raise HTTPException(status_code=500, detail="Internal server error while retrieving messages.")
-
 
 @app.api_route("/v1/chat/completions", methods=["POST"])
-async def proxy(request: Request, session: AsyncSession = Depends(get_db)):
+async def proxy(request: Request, session: AsyncSession = Depends(get_db)): # Get session via Depends
 
-  body = await request.body()
+    body = await request.body()
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    headers.pop("accept-encoding", None)
+    auth_header = headers.get("authorization", "")
+    project_call_key_value = None
+    if auth_header.lower().startswith("bearer "):
+        project_call_key_value = auth_header[7:]
+    else:
+        logger.warning(f"Invalid or missing Authorization header format: {auth_header}")
+        raise HTTPException(status_code=401, detail="Invalid Authorization header format.")
 
-  print("HEEY")
-  
-  # Convert headers to dict and filter out host header
-  headers = dict(request.headers)
-  headers.pop("host", None)
-  # Also remove accept-encoding, as the proxy will handle decoding if necessary
-  # Let the target server decide how to encode its response
-  headers.pop("accept-encoding", None)
-  
-  auth_header = headers.get("authorization", "")
-  api_key = None
-  if auth_header.lower().startswith("bearer "):
-      api_key = auth_header[7:] # Get the part after "Bearer "
-  else:
-      # Handle cases where the header is missing or doesn't start with Bearer
-      logger.warning(f"Invalid or missing Authorization header format: {auth_header}")
-      raise HTTPException(status_code=401, detail="Invalid Authorization header format.")
-
-  if not api_key: # Double check if api_key extraction failed
+    if not project_call_key_value:
         raise HTTPException(status_code=401, detail="Authorization token missing.")
 
-  # test raise exception with api key
-  #raise HTTPException(status_code=401, detail=f"Test exception with api key, {api_key}")
+    project_id_for_request: Optional[uuid.UUID] = None # Variable to store the project ID
+    linked_or_key_value: Optional[str] = None # Variable to store the OR key
 
-  try:
-    matching_openrouter_key = await find_openrouter_key_by_intercept_key(api_key, session)
-    #raise HTTPException(status_code=401, detail=f"Test exception with api key and openrouter, {api_key} and or: {matching_openrouter_key.or_key}")
-    if not matching_openrouter_key:
-        # Handle case where intercept key is valid but no matching OpenRouter key is found
-        raise HTTPException(status_code=401, detail=f"Problems with getting openrouter guest key: {matching_openrouter_key}")
-    # Replace the incoming Authorization header with the found OpenRouter key
-    headers["authorization"] = f"Bearer {matching_openrouter_key.or_key}"
-    print("Replaced Authorization header with OpenRouter key.")
-  except HTTPException as http_exc: # Re-raise specific HTTP exceptions
-      raise http_exc
-  except Exception as e:
-    # Log the actual error for debugging
-    logger.error(f"Error during OpenRouter key lookup or processing for intercept key {api_key}: {e}", exc_info=True)
-    raise HTTPException(status_code=500, detail=f"Error finding or processing OpenRouter key")
+    try:
+        # Find the CompletionProjectCallKeys record and its linked OpenRouterGuestKey
+        stmt = (
+            select(CompletionProjectCallKeys)
+            .options(selectinload(CompletionProjectCallKeys.openrouter_guest_key))
+            .where(CompletionProjectCallKeys.key == project_call_key_value)
+        )
+        result = await session.execute(stmt)
+        project_call_key_record = result.scalars().first()
 
-  # Construct target URL
-  target_url = OPENROUTER_CHAT_COMPLETIONS_ENDPOINT #f"{OPENAI_API_BASE}/{path}"
-  
-  try:
-    # Forward the request to OpenRouter
-    async with httpx.AsyncClient() as client:
-      # Log the headers just before sending the request
-      logger.debug(f"Forwarding request to {target_url} with headers: {headers}") # <-- ADD THIS LINE
+        if not project_call_key_record:
+            logger.warning(f"Project Call Key not found: {project_call_key_value}")
+            raise HTTPException(status_code=401, detail="Invalid API Key provided.")
 
-      response = await client.request(
-          method=request.method,
-          url=target_url,
-          headers=headers, # Ensure this 'headers' dict contains the correct Authorization
-          content=body,
-          follow_redirects=True
-      )
+        if not project_call_key_record.is_active:
+            logger.warning(f"Project Call Key is inactive: {project_call_key_value}")
+            raise HTTPException(status_code=403, detail="API Key is inactive.")
 
-      try:
-          # Get a new DB session for this request
+        # --- Get the Project ID ---
+        project_id_for_request = project_call_key_record.project_id
+        if not project_id_for_request:
+             logger.error(f"Project Call Key {project_call_key_value} has no associated project_id.")
+             raise HTTPException(status_code=500, detail="Internal configuration error: API key not linked to a project.")
 
-        async for session in get_db(): # Use the dependency
-            log_entry = RequestsLog(
-            intercept_key=api_key,
-              request_method=request.method,
-              request_url=str(request.url),
-              request_headers=dict(request.headers), # Store all headers for now
-              request_body=json.loads(body),
-              response_status_code=response.status_code,
-              response_headers=dict(response.headers),
-              response_body=json.loads(response.content.decode('utf-8', errors='replace'))
+        linked_or_key = project_call_key_record.openrouter_guest_key
+
+        if not linked_or_key:
+            logger.error(f"No OpenRouter key linked to Project Call Key: {project_call_key_value} (ID: {project_call_key_record.id})")
+            raise HTTPException(status_code=500, detail="Internal configuration error: No provider key linked to this API key.")
+
+        if not linked_or_key.is_active or linked_or_key.or_disabled:
+            logger.warning(f"Linked OpenRouter key is inactive/disabled for Project Call Key: {project_call_key_value}")
+            raise HTTPException(status_code=403, detail="Provider key associated with this API key is inactive.")
+
+        linked_or_key_value = linked_or_key.or_key
+        headers["authorization"] = f"Bearer {linked_or_key_value}"
+        logger.info(f"Using OpenRouter key linked to Project Call Key {project_call_key_value[:5]}... for project {project_id_for_request}")
+
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        logger.error(f"Error during key lookup or processing for Project Call Key {project_call_key_value}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error finding or processing API key.")
+
+    target_url = OPENROUTER_CHAT_COMPLETIONS_ENDPOINT
+
+    try:
+        # Forward the request to OpenRouter
+        async with httpx.AsyncClient() as client:
+            logger.debug(f"Forwarding request to {target_url}")
+            response = await client.request(
+                method=request.method,
+                url=target_url,
+                headers=headers,
+                content=body,
+                follow_redirects=True
             )
-            print(f"Created log entry: {log_entry}")
-            session.add(log_entry)
-            print("Added to session")
 
-            await session.flush()
-            
-            print('Trying to log it more structured too:')                
-            # After your existing DB logging code
+        # --- Database Logging ---
+        # Use the session obtained from Depends(get_db)
+        try:
+            # --- Remove RequestsLog creation ---
+            # log_entry = RequestsLog(...)
+            # session.add(log_entry)
+            # await session.flush()
+
             if response.status_code == 200:
                 try:
                     response_data = json.loads(response.content.decode('utf-8', errors='replace'))
                     body_json_loaded = json.loads(body.decode('utf-8', errors='replace'))
-                    
+
                     request_body_messages = body_json_loaded.get("messages", [])
                     messages_hash = hash_json_content(request_body_messages)
                     request_body_model = body_json_loaded.get("model", "")
-                    request_body_response_format = body_json_loaded.get("response_format", None) 
+                    request_body_response_format = body_json_loaded.get("response_format", None)
                     request_body_response_format_hash = hash_json_content(request_body_response_format) if request_body_response_format is not None else None
 
-               
+                    # --- Create CompletionsRequest with project_id ---
                     completion_request = CompletionsRequest(
-                      request_log_id=log_entry.id,  # Link to the original request log
-                      intercept_key=api_key,
-                      messages = request_body_messages,
-                      messages_hash = messages_hash,
-                      model = request_body_model,
-                      response_format = request_body_response_format, # Will now store None if not present
-                      response_format_hash= request_body_response_format_hash,
-
+                        # request_log_id=log_entry.id, # Removed
+                        # intercept_key=project_call_key_value, # Removed
+                        project_id=project_id_for_request, # Added
+                        messages=request_body_messages,
+                        messages_hash=messages_hash,
+                        model=request_body_model,
+                        response_format=request_body_response_format,
+                        response_format_hash=request_body_response_format_hash,
                     )
-                    print('trying to add completion request')
+                    logger.debug(f"Creating CompletionsRequest for project {project_id_for_request}")
                     session.add(completion_request)
-                    await session.flush()
-                    print('added completion request with id ', completion_request.id)
+                    await session.flush() # Flush to get completion_request.id
+                    logger.info(f"Added CompletionsRequest with id {completion_request.id}")
 
-                    choices = response_data.get("choices")
-                    first_choice = choices[0] # Get first choice or empty dict
-                    message = first_choice.get("message", {})
+                    choices = response_data.get("choices", [])
+                    if not choices:
+                         logger.warning("Response from provider contained no 'choices'. Cannot log CompletionResponse.")
+                         # Decide how to handle this - maybe commit request only, or raise error?
+                         await session.commit() # Commit request even if response is weird
+                         # Continue to return response to client below
+                    else:
+                        first_choice = choices[0]
+                        message = first_choice.get("message", {})
 
-                    new_annotation_target = AnnotationTarget()
-                    session.add(new_annotation_target)
-                    await session.flush() # Flush to get the ID of the new target
-                    print(f'Created annotation target with id {new_annotation_target.id}')
+                        # Create AnnotationTarget first
+                        new_annotation_target = AnnotationTarget()
+                        session.add(new_annotation_target)
+                        await session.flush() # Flush to get the ID
+                        logger.debug(f"Created AnnotationTarget with id {new_annotation_target.id}")
 
-                    # Create completion response record
-                    completion = CompletionResponse(
-                        id=response_data["id"],
-                        completion_request_id=completion_request.id,
-                        annotation_target_id=new_annotation_target.id,
-                        provider=response_data.get("provider", ""),
-                        model=response_data.get("model", ""),
-                        created=response_data.get("created", 0),
-                        prompt_tokens=response_data.get("usage", {}).get("prompt_tokens", 0),
-                        completion_tokens=response_data.get("usage", {}).get("completion_tokens", 0),
-                        total_tokens=response_data.get("usage", {}).get("total_tokens", 0),
-                        choice_finish_reason=first_choice.get("finish_reason", ""),
-                        choice_role=message.get("role", ""),
-                        choice_content=message.get("content", "")
-                    )
-                    
-                    session.add(completion)
+                        # Create CompletionResponse linked to CompletionsRequest and AnnotationTarget
+                        completion = CompletionResponse(
+                            id=response_data["id"], # Use ID from provider response
+                            completion_request_id=completion_request.id, # Link to our request
+                            annotation_target_id=new_annotation_target.id, # Link to annotation target
+                            provider=response_data.get("provider", ""), # Optional provider field
+                            model=response_data.get("model", ""),
+                            created=response_data.get("created", 0),
+                            prompt_tokens=response_data.get("usage", {}).get("prompt_tokens", 0),
+                            completion_tokens=response_data.get("usage", {}).get("completion_tokens", 0),
+                            total_tokens=response_data.get("usage", {}).get("total_tokens", 0),
+                            choice_finish_reason=first_choice.get("finish_reason", ""),
+                            choice_role=message.get("role", ""),
+                            choice_content=message.get("content", "")
+                        )
+                        session.add(completion)
+                        logger.info(f"Added CompletionResponse with id {completion.id}")
 
-                    print('added completion request')
-                    # Create choice records
-                    
-                    await session.commit()
-                    print('committed the structured stuff')
-                    
+                        await session.commit() # Commit request, target, and response together
+                        logger.debug("Committed CompletionsRequest, AnnotationTarget, and CompletionResponse.")
+
+                except json.JSONDecodeError as json_err:
+                    logger.error(f"Failed to decode JSON from request body or provider response: {json_err}")
+                    # Decide how to handle - maybe raise 500, or just log and skip structured logging
+                    await session.rollback() # Rollback any partial adds
+                except KeyError as key_err:
+                     logger.error(f"Missing expected key in provider response data: {key_err}", exc_info=True)
+                     await session.rollback()
                 except Exception as e:
-                    logger.error(f"Error storing structured response: {e}")
+                    logger.error(f"Error storing structured response data: {e}", exc_info=True)
+                    await session.rollback() # Rollback on any other error during structured logging
+            else:
+                 # Log non-200 responses? Currently only logging 200s structurally.
+                 logger.info(f"Received non-200 status ({response.status_code}) from provider. Skipping structured logging.")
+                 # No commit needed here if nothing was added
 
-            # Add an explicit commit here to see if it helps
-            await session.commit()
-            print("Committed to database")
-            print(f"Logged request/response for key {api_key} to DB")
+        except SQLAlchemyError as db_exc:
+            logger.error(f"Database error during logging for project {project_id_for_request}: {db_exc}", exc_info=True)
+            await session.rollback() # Ensure rollback on DB error
+            # Do not raise HTTPException here, as we still want to return the provider's response
+        except Exception as log_exc:
+             logger.error(f"Unexpected error during logging setup for project {project_id_for_request}: {log_exc}", exc_info=True)
+             await session.rollback() # Rollback just in case
 
-      except Exception as e:
-        print(f"Failed to log request to DB for key {api_key}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to log request to DB")
-            # Optionally log to file as fallback here if DB fails
+        # Prepare headers for the response back to the original client
+        response_headers = {
+            k: v for k, v in response.headers.items()
+            if k.lower() not in [
+                'content-encoding', 'transfer-encoding', 'connection', 'content-length',
+            ]
+        }
 
-    
-    # Prepare headers for the response back to the original client
-    # Filter out headers that should not be blindly forwarded
-    response_headers = {
-        k: v for k, v in response.headers.items()
-        if k.lower() not in [
-            'content-encoding',
-            'transfer-encoding',
-            'connection',
-            'content-length', # Will be set automatically by FastAPI/Starlette
-        ]
-    }
+        # Return the response to the client
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            headers=response_headers
+        )
 
-    # Return the response to the client
-    return Response(
-        content=response.content, # Forward the raw content bytes
-        status_code=response.status_code,
-        headers=response_headers # Forward filtered headers
-    )
-      
-  except httpx.RequestError as exc:
-      logger.error(f"Error making request to OpenRouter: {exc}")
-      return JSONResponse(
-          status_code=500,
-          content={"error": f"Error proxying request: {str(exc)}"}
-      )
+    except httpx.RequestError as exc:
+        logger.error(f"Error making request to OpenRouter: {exc}")
+        # Don't try to log to DB here as the request failed
+        return JSONResponse(
+            status_code=502, # Bad Gateway might be appropriate
+            content={"error": f"Error proxying request to provider: {str(exc)}"}
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error in proxy endpoint: {e}", exc_info=True)
+        # Don't try to log to DB here
+        raise HTTPException(status_code=500, detail="Internal server error during request proxying.")
 
 @app.get("/health")
 async def health_check():

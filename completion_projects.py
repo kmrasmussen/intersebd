@@ -2,15 +2,18 @@ from fastapi import APIRouter, Depends, HTTPException, status, Response, Body
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import uuid
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+import logging
 
 import models
 from database import get_db
-from auth import get_current_user, GUEST_USER_ID_COOKIE
+from auth import get_current_user
+from provider_keys import _fetch_new_openrouter_key_data
+
+logger = logging.getLogger(__name__)
 
 # --- Pydantic Schemas ---
 
@@ -50,51 +53,24 @@ router = APIRouter(
     tags=["completion-projects"],
 )
 
-# --- Endpoint to Create Default Project ---
+# --- Endpoint to Create/Get Default Project ---
 
 @router.post("/default", response_model=DefaultProjectResponse, status_code=status.HTTP_201_CREATED)
-async def create_default_project(
-    request_body: Optional[DefaultProjectRequest] = Body(None),
+async def create_or_get_default_project(
     db: AsyncSession = Depends(get_db),
-    current_user_from_cookie: Optional[models.User] = Depends(get_current_user)
+    current_user: Optional[models.User] = Depends(get_current_user)
 ):
-    user_to_use: Optional[models.User] = None
-    user_id_to_query: Optional[uuid.UUID] = None
-
-    # Priority 1: User ID from request body (for immediate guest creation)
-    if request_body and request_body.user_id:
-        print(f"create_default_project: Received user_id in request body: {request_body.user_id}")
-        user_id_to_query = request_body.user_id
-    # Priority 2: User from cookie/session dependency
-    elif current_user_from_cookie:
-        print(f"create_default_project: Using user from cookie/session: {current_user_from_cookie.id}")
-        user_to_use = current_user_from_cookie
-        user_id_to_query = current_user_from_cookie.id
-    else:
-        # No user ID in body and no user from cookie/session
-        print("create_default_project: No user_id in body and no user from cookie/session.")
+    if not current_user:
+        logger.warning("create_or_get_default_project: No authenticated user found.")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not authenticated or identified"
         )
 
-    # If we only have the ID (from body), fetch the user object
-    if not user_to_use and user_id_to_query:
-        stmt_user = select(models.User).filter(models.User.id == user_id_to_query)
-        result_user = await db.execute(stmt_user)
-        user_to_use = result_user.scalars().first()
-        if not user_to_use:
-             print(f"create_default_project: User ID {user_id_to_query} from body not found in DB.")
-             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User specified in request not found"
-            )
-        print(f"create_default_project: Fetched user from DB using ID from body: {user_to_use.id}")
+    user_to_use = current_user
+    logger.info(f"create_or_get_default_project: Proceeding for user {user_to_use.id}")
 
-    # --- Proceed with existing logic using user_to_use ---
-    print(f"create_default_project: Proceeding for user {user_to_use.id}")
-
-    # Check if Default Project Exists
+    # --- Check if Default Project Exists ---
     stmt_proj = select(models.CompletionProject).filter(
         models.CompletionProject.creator_id == user_to_use.id,
         models.CompletionProject.name == "Default Project"
@@ -103,64 +79,98 @@ async def create_default_project(
     existing_default = result_proj.scalars().first()
 
     if existing_default:
-        print(f"Default project {existing_default.id} already exists for user {user_to_use.id}")
+        logger.info(f"Default project {existing_default.id} already exists for user {user_to_use.id}")
+        stmt_mem_check = select(models.ProjectMembership).filter(
+            models.ProjectMembership.project_id == existing_default.id,
+            models.ProjectMembership.user_id == user_to_use.id
+        ).limit(1)
+        result_mem_check = await db.execute(stmt_mem_check)
+        existing_membership = result_mem_check.scalars().first()
+        if not existing_membership:
+            logger.warning(f"WARN: Default project {existing_default.id} exists but owner membership missing. Adding...")
+
         stmt_key = select(models.CompletionProjectCallKeys).filter(
             models.CompletionProjectCallKeys.project_id == existing_default.id
-        )
+        ).limit(1)
         result_key = await db.execute(stmt_key)
         existing_key = result_key.scalars().first()
+
         return DefaultProjectResponse(
             project=ProjectSchema.model_validate(existing_default),
             key=KeySchema.model_validate(existing_key) if existing_key else None
         )
 
-    # Create Default Project
-    print(f"Creating new default project for user {user_to_use.id}")
+    # --- Create Default Project, Membership, Call Key, and Provider Key ---
+    logger.info(f"Creating new default project for user {user_to_use.id}")
+
     new_project = models.CompletionProject(
         name="Default Project",
         description="Your first project.",
         creator_id=user_to_use.id
     )
-    db.add(new_project)
+
+    owner_membership = models.ProjectMembership(
+        user=user_to_use,
+        project=new_project,
+        role='owner'
+    )
+
+    call_key_value = f"sk_{uuid.uuid4().hex}"
+    new_call_key = models.CompletionProjectCallKeys(
+        project=new_project,
+        key=call_key_value
+    )
+
     try:
+        or_key_data = await _fetch_new_openrouter_key_data()
+    except HTTPException as http_exc:
+        logger.error(f"Failed to fetch OpenRouter key data: {http_exc.detail} (Status: {http_exc.status_code})")
+        raise HTTPException(status_code=http_exc.status_code, detail=f"Failed to provision necessary backend key: {http_exc.detail}")
+    except Exception as e:
+        logger.exception("Unexpected error fetching OpenRouter key data.")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Unexpected internal error during key provisioning.")
+
+    new_or_key = models.OpenRouterGuestKey(
+        user=user_to_use,
+        completion_project_call_key=new_call_key,
+        **or_key_data
+    )
+
+    try:
+        db.add_all([new_project, owner_membership, new_call_key, new_or_key])
         await db.commit()
+
         await db.refresh(new_project)
-        print(f"Created project {new_project.id}")
-    except SQLAlchemyError as e:
+        await db.refresh(new_call_key)
+        await db.refresh(new_or_key)
+
+        logger.info(f"Created project {new_project.id}, membership, call key {new_call_key.id}, and linked OR key {new_or_key.id}")
+
+    except (SQLAlchemyError, IntegrityError) as e:
         await db.rollback()
-        print(f"Error creating default project DB commit: {e}")
+        logger.error(f"Database error creating default project structure: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create default project: {e}"
+            detail=f"Failed to save default project structure: {e}"
         )
-
-    # Create Default Key
-    key_value = f"sk_{uuid.uuid4().hex}"
-    new_key = models.CompletionProjectCallKeys(
-        project_id=new_project.id,
-        key=key_value
-    )
-    db.add(new_key)
-    try:
-        await db.commit()
-        await db.refresh(new_key)
-        print(f"Created default key {new_key.id} for project {new_project.id}")
-    except SQLAlchemyError as e:
+    except Exception as e:
         await db.rollback()
-        print(f"Error creating default key DB commit: {e}")
-        new_key = None
+        logger.exception("Unexpected error during database commit/refresh for default project.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unexpected internal error saving project data."
+        )
 
     return DefaultProjectResponse(
         project=ProjectSchema.model_validate(new_project),
-        key=KeySchema.model_validate(new_key) if new_key else None
+        key=KeySchema.model_validate(new_call_key)
     )
 
-# --- Add other project endpoints here ---
+# --- Other project endpoints ---
 
-# Example: Get all projects for the current user
 @router.get("", response_model=List[ProjectSchema])
-def get_user_projects(
-    db: Session = Depends(get_db),
+async def get_user_projects(
+    db: AsyncSession = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     if not current_user:
@@ -168,14 +178,17 @@ def get_user_projects(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required to view projects",
         )
-    projects = db.query(models.CompletionProject).filter(models.CompletionProject.creator_id == current_user.id).all()
+    stmt = select(models.CompletionProject).join(models.ProjectMembership).filter(
+        models.ProjectMembership.user_id == current_user.id
+    )
+    result = await db.execute(stmt)
+    projects = result.scalars().all()
     return projects
 
-# Example: Get a specific project by ID (ensure user has access)
 @router.get("/{project_id}", response_model=ProjectSchema)
-def get_project_by_id(
+async def get_project_by_id(
     project_id: uuid.UUID,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     if not current_user:
@@ -184,10 +197,12 @@ def get_project_by_id(
             detail="Authentication required",
         )
 
-    project = db.query(models.CompletionProject).filter(
+    stmt = select(models.CompletionProject).join(models.ProjectMembership).filter(
         models.CompletionProject.id == project_id,
-        models.CompletionProject.creator_id == current_user.id
-    ).first()
+        models.ProjectMembership.user_id == current_user.id
+    )
+    result = await db.execute(stmt)
+    project = result.scalars().first()
 
     if project is None:
         raise HTTPException(

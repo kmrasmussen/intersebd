@@ -28,6 +28,7 @@ type ResponseMetadata = {
 
 type Response = {
   id: string
+  annotation_target_id?: string | null
   content: string
   model: string
   created: string
@@ -105,16 +106,76 @@ function JsonFormatter({ jsonString }: { jsonString: string }) {
 export function ResponseCard({
   response,
   isAlternative = false,
+  projectId, // <-- Add projectId prop
 }: {
   response: Response
   isAlternative?: boolean
+  projectId: string // <-- Add projectId prop type
 }) {
   const [showRawData, setShowRawData] = useState(false)
   const [hideAnnotations, setHideAnnotations] = useState(false)
+  const [isAnnotating, setIsAnnotating] = useState(false) // State for loading
+  const [annotationError, setAnnotationError] = useState<string | null>(null) // State for errors
 
   const handleDeleteResponse = () => {
     // In a real application, this would make an API call to delete the response
     console.log("Delete response:", response.id)
+  }
+
+  const handleAnnotationSubmit = async (reward: number) => {
+    if (!response.annotation_target_id) {
+      console.error("Annotation target ID is missing for this response:", response.id)
+      setAnnotationError("Cannot annotate: Missing target ID.")
+      return
+    }
+
+    setIsAnnotating(true)
+    setAnnotationError(null)
+
+    const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ""
+    const GUEST_USER_ID_HEADER = "X-Guest-User-Id"
+    const apiUrl = `${API_BASE_URL}/mock-next/${projectId}/annotation-targets/${response.annotation_target_id}/annotations`
+    const guestUserId = localStorage.getItem("guestUserId")
+    const headers: HeadersInit = {
+      "Content-Type": "application/json",
+    }
+    if (guestUserId) {
+      headers[GUEST_USER_ID_HEADER] = guestUserId
+    }
+
+    const body = JSON.stringify({
+      reward: reward,
+      annotation_metadata: { submittedFrom: "ResponseCard" }, // Example metadata
+    })
+
+    console.log(`Submitting annotation to ${apiUrl} with reward ${reward}`)
+
+    try {
+      const apiResponse = await fetch(apiUrl, {
+        method: "POST",
+        headers: headers,
+        body: body,
+      })
+
+      if (!apiResponse.ok) {
+        let errorDetail = `HTTP error! status: ${apiResponse.status}`
+        try {
+          const errorData = await apiResponse.json()
+          errorDetail += ` - ${errorData.detail || "Unknown error"}`
+        } catch (jsonError) {
+          // Ignore if response is not JSON
+        }
+        throw new Error(errorDetail)
+      }
+
+      const newAnnotationData = await apiResponse.json()
+      console.log("Annotation submitted successfully:", newAnnotationData)
+    } catch (error: any) {
+      console.error("Failed to submit annotation:", error)
+      setAnnotationError(error.message || "Failed to submit annotation")
+    } finally {
+      setIsAnnotating(false)
+    }
   }
 
   return (
@@ -175,11 +236,23 @@ export function ResponseCard({
 
       <CardFooter className="border-t bg-gray-50 py-3 px-4 flex flex-col items-start gap-2">
         <div className="flex items-center gap-2 w-full">
-          <Button variant="outline" size="sm" className="bg-blue-50 text-blue-600 hover:bg-blue-100">
+          <Button
+            variant="outline"
+            size="sm"
+            className="bg-blue-50 text-blue-600 hover:bg-blue-100"
+            onClick={() => handleAnnotationSubmit(1)}
+            disabled={isAnnotating}
+          >
             <ThumbsUp className="h-4 w-4 mr-1" />
             Annotate with reward 1
           </Button>
-          <Button variant="outline" size="sm" className="bg-gray-100 text-gray-600 hover:bg-gray-200">
+          <Button
+            variant="outline"
+            size="sm"
+            className="bg-gray-100 text-gray-600 hover:bg-gray-200"
+            onClick={() => handleAnnotationSubmit(0)}
+            disabled={isAnnotating}
+          >
             <ThumbsDown className="h-4 w-4 mr-1" />
             Annotate with reward 0
           </Button>
@@ -192,6 +265,8 @@ export function ResponseCard({
             </Button>
           </div>
         </div>
+
+        {annotationError && <div className="text-red-500 text-sm">{annotationError}</div>}
 
         {!hideAnnotations && response.annotations.length > 0 && (
           <div className="w-full">

@@ -25,14 +25,14 @@ class SftMessageSchema(BaseModel):
     weight: Optional[int] = Field(None, description="Weight for fine-tuning (0 or 1, default is None/ignored)")
 
     class Config:
-        orm_mode = False
+        from_attributes = True
 
 class SftConversationSchema(BaseModel):
     """Represents a full conversation, typically a list of messages."""
     messages: List[SftMessageSchema] = Field(..., description="A list of messages forming the conversation")
 
     class Config:
-        orm_mode = False
+        from_attributes = True
 
 # --- Router Setup ---
 

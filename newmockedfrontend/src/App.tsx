@@ -11,6 +11,7 @@ import LoadingSpinner from "@/components/LoadingSpinner";
 import { LoginStatusResponse, DefaultProjectResponse, GuestUserResponse } from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
+const GUEST_USER_ID_HEADER = "X-Guest-User-Id"; // Define header name constant
 
 function App() {
   const [isLoading, setIsLoading] = useState(true);
@@ -32,7 +33,6 @@ function App() {
       try {
         // 1. Check backend login status
         const statusResponse = await fetch(`${API_BASE_URL}/auth/login_status`, { credentials: 'include' });
-        // ... status check error handling ...
         const statusData: LoginStatusResponse = statusResponse.ok ? await statusResponse.json() : { is_logged_in: false, is_guest: false, user_info: null };
         if (isMounted) setUserStatus(statusData);
 
@@ -73,26 +73,35 @@ function App() {
             effectiveUserId = storedGuestId;
             try {
               const fetchUrl3a = `${API_BASE_URL}/completion-projects/default`;
+              const headers3a: HeadersInit = {
+                  'Content-Type': 'application/json',
+                  [GUEST_USER_ID_HEADER]: effectiveUserId
+              };
               const fetchOptions3a: RequestInit = {
                   method: "POST",
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ user_id: effectiveUserId }),
+                  headers: headers3a,
                   credentials: 'include'
               };
+              console.log(`DEBUG: About to fetch URL (3a): ${fetchUrl3a}`);
+              console.log("DEBUG: Fetch options (3a):", JSON.stringify(fetchOptions3a, null, 2));
+
               const projectResponse = await fetch(fetchUrl3a, fetchOptions3a);
 
               if (projectResponse.ok) {
-                console.log("Successfully used localStorage guest ID to get/create project.");
+                console.log("Successfully used localStorage guest ID (via header) to get/create project.");
                 const projectData: DefaultProjectResponse = await projectResponse.json();
-                fetchedProjectId = projectData.project.id; // Store in temp variable
+                fetchedProjectId = projectData.project.id;
+                const newStatusResponse = await fetch(`${API_BASE_URL}/auth/login_status`, { credentials: 'include' });
+                const newStatusData = newStatusResponse.ok ? await newStatusResponse.json() : statusData;
+                if (isMounted) setUserStatus(newStatusData);
+
               } else {
-                 // Log the specific error status before clearing
-                 console.warn(`Failed to use localStorage guest ID ${effectiveUserId} (Status: ${projectResponse.status}). Clearing localStorage.`);
+                 console.warn(`Failed to use localStorage guest ID ${effectiveUserId} via header (Status: ${projectResponse.status}). Clearing localStorage.`);
                  localStorage.removeItem('guestUserId');
                  effectiveUserId = null; // Invalidate ID to trigger new guest creation
               }
             } catch (localIdError) {
-               console.error("Error trying to use localStorage guest ID:", localIdError); // Log the actual error
+               console.error("Error trying to use localStorage guest ID via header:", localIdError);
                localStorage.removeItem('guestUserId');
                effectiveUserId = null; // Invalidate ID to trigger new guest creation
             }
@@ -101,7 +110,7 @@ function App() {
           // --- Sub-Scenario 3b: Create New Guest ---
           if (!effectiveUserId && !fetchedProjectId) {  
             console.log("Creating new guest user...");
-            const guestResponse = await fetch(`${API_BASE_URL}/auth/users/guest`, { method: "POST" });
+            const guestResponse = await fetch(`${API_BASE_URL}/auth/users/guest`, { method: "POST", credentials: 'include' });
             if (!guestResponse.ok) throw new Error(`Failed to create guest user: ${guestResponse.statusText}`);
             const guestData: GuestUserResponse = await guestResponse.json();
             effectiveUserId = guestData.guest_user_id;
@@ -114,28 +123,29 @@ function App() {
             const fetchOptions: RequestInit = {
               method: "POST",
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ user_id: effectiveUserId }),
               credentials: 'include'
             };
-            console.log(`DEBUG: About to fetch URL: ${fetchUrl}`);
-            console.log("DEBUG: Fetch options:", JSON.stringify(fetchOptions, null, 2));
+            console.log(`DEBUG: About to fetch URL (3b): ${fetchUrl}`);
+            console.log("DEBUG: Fetch options (3b):", JSON.stringify(fetchOptions, null, 2));
 
             try {
                 const projectResponse = await fetch(fetchUrl, fetchOptions);
                 if (!projectResponse.ok) {
-                    // Log error details if fetch fails
                     const errorText = await projectResponse.text();
-                    console.error(`DEBUG: Project fetch failed with status ${projectResponse.status}. Response: ${errorText}`);
+                    console.error(`DEBUG: Project fetch failed (3b) with status ${projectResponse.status}. Response: ${errorText}`);
                     throw new Error(`Failed project fetch for new guest: ${projectResponse.status} ${projectResponse.statusText}`);
                 }
                 const projectData: DefaultProjectResponse = await projectResponse.json();
-                console.log("Received project data:", JSON.stringify(projectData, null, 2));
-                if (!projectData?.project?.id) throw new Error("Project ID missing in response.");
+                console.log("Received project data (3b):", JSON.stringify(projectData, null, 2));
+                if (!projectData?.project?.id) throw new Error("Project ID missing in response (3b).");
                 fetchedProjectId = projectData.project.id;
+                const finalStatusResponse = await fetch(`${API_BASE_URL}/auth/login_status`, { credentials: 'include' });
+                const finalStatusData = finalStatusResponse.ok ? await finalStatusResponse.json() : statusData;
+                if (isMounted) setUserStatus(finalStatusData);
+
             } catch (fetchError) {
-                 // Log the specific fetch error
-                 console.error("DEBUG: Error during project fetch:", fetchError);
-                 throw fetchError; // Re-throw the error to be caught by the outer catch block
+                 console.error("DEBUG: Error during project fetch (3b):", fetchError);
+                 throw fetchError;
             }
           }
         }
@@ -146,7 +156,6 @@ function App() {
                 console.log(`Initialization successful. Setting projectId: ${fetchedProjectId}`);
                 setProjectId(fetchedProjectId);
             } else {
-                // If we reached here without a project ID, something went wrong
                 console.error("Initialization completed but no project ID was determined.");
                 setInitializationError("Could not determine project ID.");
             }
@@ -165,7 +174,6 @@ function App() {
 
     initializeUserAndProject();
 
-    // Cleanup function to prevent state updates if component unmounts
     return () => {
         console.log("Initialization effect cleanup."); // Add log
         isMounted = false;
@@ -173,17 +181,15 @@ function App() {
   }, []); // Empty dependency array: Run only once on mount
 
   // --- Navigation Effect ---
-  // This effect runs whenever projectId changes *after* the initial render
   const navigate = useNavigate();
   useEffect(() => {
     if (projectId) {
       console.log(`Project ID set to ${projectId}, navigating to root project path.`);
-      // Check if we are already at a project path to avoid loop
       if (!window.location.pathname.includes(projectId)) {
          navigate(`/${projectId}`, { replace: true });
       }
     }
-  }, [projectId, navigate]); // Run when projectId or navigate changes
+  }, [projectId, navigate]);
 
   // --- Render Logic ---
   if (isLoading) {
@@ -194,32 +200,22 @@ function App() {
       return <div>Error: {initializationError} Please try refreshing.</div>;
   }
 
-  // If we are still loading or haven't determined project ID yet, show loading or nothing
-  // This prevents rendering the Routes until projectId is ready for navigation effect
   if (!projectId) {
-      console.log("Render: Waiting for projectId to be set..."); // Add log
-      return <LoadingSpinner />; // Or null, or a minimal loading indicator
+      console.log("Render: Waiting for projectId to be set...");
+      return <LoadingSpinner />;
   }
 
-  // Render Routes only when projectId is set and loading is complete
-  console.log(`Render: ProjectId is ${projectId}, rendering Routes.`); // Add log
+  console.log(`Render: ProjectId is ${projectId}, rendering Routes.`);
   return (
       <Routes>
-        {/* Base path redirect is handled by the navigation effect now */}
-        {/* <Route path="/" element={<Navigate to={`/${projectId}`} replace />} /> */}
-
-        {/* Layout route needs userStatus */}
         <Route path="/" element={<Layout userStatus={userStatus} />}>
-          {/* Define routes relative to the layout */}
           <Route path=":projectId" element={<ProjectHomePage />} />
           <Route path=":projectId/caller" element={<CallerPage />} />
           <Route path=":projectId/json-schema" element={<JsonSchemaPage />} />
           <Route path=":projectId/generate-dataset" element={<GenerateDatasetPage />} />
           <Route path=":projectId/requests/:requestId" element={<RequestDetailsPage />} />
-          {/* Optional: Add a catch-all or index route within the project context if needed */}
-           <Route index element={<Navigate to={`/${projectId}`} replace />} /> {/* Redirect index within layout */}
+           <Route index element={<Navigate to={`/${projectId}`} replace />} />
         </Route>
-         {/* Optional: Add a top-level catch-all for invalid paths */}
          <Route path="*" element={<Navigate to={`/${projectId}`} replace />} />
       </Routes>
   );

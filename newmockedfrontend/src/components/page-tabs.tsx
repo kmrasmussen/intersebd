@@ -38,21 +38,21 @@ export function PageTabs({ projectId }: PageTabsProps) {
         <CodeExample
           defaultPrompt="What is the capital of France?"
           title="Quick API Call"
-          // projectId={projectId} // Uncomment if CodeExample needs it
+          projectId={projectId}
         />
       ) : activeTab === "schema-editor" ? (
         <SchemaEditorComponent
           title="Quick Schema Edit"
-          // projectId={projectId} // Uncomment if SchemaEditorComponent needs it
+          // projectId={projectId} // Pass if SchemaEditorComponent needs it
         />
       ) : (
         <DownloadDatasetComponent
           title="Quick Dataset Download"
           description="Download JSONL datasets for fine-tuning based on your annotated responses."
-          sftAnnotatedResponses={5}
-          dpoAnnotatedResponses={3}
-          requiredResponses={20}
-          // projectId={projectId} // Uncomment if DownloadDatasetComponent needs it
+          sftAnnotatedResponses={5} // Example value
+          dpoAnnotatedResponses={3} // Example value
+          requiredResponses={20} // Example value
+          // projectId={projectId} // Pass if DownloadDatasetComponent needs it
         />
       )}
     </>

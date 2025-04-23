@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react" // Removed unused useEffect
+import { useState, useEffect } from "react" // Added useEffect
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Download, ChevronUp, ChevronDown, AlertTriangle } from "lucide-react" // Removed unused Info
@@ -14,6 +14,7 @@ interface DownloadDatasetComponentProps {
   sftAnnotatedResponses?: number
   dpoAnnotatedResponses?: number
   requiredResponses?: number
+  projectId: string // <-- MAKE SURE THIS LINE IS PRESENT
 }
 
 export function DownloadDatasetComponent({
@@ -23,6 +24,7 @@ export function DownloadDatasetComponent({
   sftAnnotatedResponses: initialSftAnnotatedResponses = 5,
   dpoAnnotatedResponses: initialDpoAnnotatedResponses = 3,
   requiredResponses = 20,
+  projectId // <-- MAKE SURE THIS IS PRESENT
 }: DownloadDatasetComponentProps) {
   const [collapsed, setCollapsed] = useState(false)
   const [isDownloadingSft, setIsDownloadingSft] = useState(false)
@@ -31,6 +33,10 @@ export function DownloadDatasetComponent({
   const [isRefreshingDpo, setIsRefreshingDpo] = useState(false)
   const [sftAnnotatedResponses, setSftAnnotatedResponses] = useState(initialSftAnnotatedResponses)
   const [dpoAnnotatedResponses, setDpoAnnotatedResponses] = useState(initialDpoAnnotatedResponses)
+
+  useEffect(() => {
+    console.log("DownloadDatasetComponent received projectId:", projectId)
+  }, [projectId])
 
   const toggleCollapse = () => {
     setCollapsed(!collapsed)

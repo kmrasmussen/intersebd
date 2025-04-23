@@ -94,7 +94,6 @@ async def get_annotations_for_completion_response_post( # Renamed function sligh
 
     # Return the list of annotations from the target
     # Pydantic will automatically convert CompletionAnnotation objects
-    # to AnnotationResponseSchema thanks to orm_mode=True
     return response.annotation_target.annotations
 
 @router.post(

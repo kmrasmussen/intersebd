@@ -7,9 +7,10 @@ import { Button } from "@/components/ui/button"
 interface SchemaEditorProps {
   schema: string
   onChange: (value: string) => void
+  placeholder?: string // <-- Add placeholder prop
 }
 
-export function SchemaEditor({ schema, onChange }: SchemaEditorProps) {
+export function SchemaEditor({ schema, onChange, placeholder }: SchemaEditorProps) { // <-- Destructure placeholder
   const [copied, setCopied] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -68,6 +69,7 @@ export function SchemaEditor({ schema, onChange }: SchemaEditorProps) {
         ref={textareaRef}
         value={schema}
         onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder} // <-- Use the placeholder prop
         className="w-full h-auto min-h-[400px] p-4 font-mono text-sm border rounded-md resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
         spellCheck="false"
         aria-label="JSON Schema Editor"

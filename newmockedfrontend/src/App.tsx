@@ -79,8 +79,7 @@ function App() {
               };
               const fetchOptions3a: RequestInit = {
                   method: "POST",
-                  headers: headers3a,
-                  credentials: 'include'
+                  headers: headers3a
               };
               console.log(`DEBUG: About to fetch URL (3a): ${fetchUrl3a}`);
               console.log("DEBUG: Fetch options (3a):", JSON.stringify(fetchOptions3a, null, 2));

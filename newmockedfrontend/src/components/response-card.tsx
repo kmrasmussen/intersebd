@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Check, RefreshCw, X, ThumbsUp, ThumbsDown, Trash2, Copy, CheckCircle2 } from "lucide-react"
 
 type Annotation = {
+  id: string // <-- ADD ID FIELD
   reward: number
   by: string
   at: string
@@ -106,24 +107,86 @@ function JsonFormatter({ jsonString }: { jsonString: string }) {
 export function ResponseCard({
   response,
   isAlternative = false,
-  projectId, // <-- Add projectId prop
+  projectId,
+  onAnnotationAdded,
+  onResponseDeleted,
+  onAnnotationDeleted, // <-- ADD new callback prop
 }: {
   response: Response
   isAlternative?: boolean
-  projectId: string // <-- Add projectId prop type
+  projectId: string
+  onAnnotationAdded?: (targetId: string, newAnnotationData: any) => void
+  onResponseDeleted?: (targetId: string) => void
+  onAnnotationDeleted?: (targetId: string, annotationId: string) => void // <-- ADD prop type
 }) {
   const [showRawData, setShowRawData] = useState(false)
   const [hideAnnotations, setHideAnnotations] = useState(false)
-  const [isAnnotating, setIsAnnotating] = useState(false) // State for loading
-  const [annotationError, setAnnotationError] = useState<string | null>(null) // State for errors
+  const [isAnnotating, setIsAnnotating] = useState(false)
+  const [annotationError, setAnnotationError] = useState<string | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false) // <-- ADD deleting state
+  const [deleteError, setDeleteError] = useState<string | null>(null) // <-- ADD delete error state
+  const [deletingAnnotationId, setDeletingAnnotationId] = useState<string | null>(null) // State for specific annotation deletion
+  const [annotationDeleteError, setAnnotationDeleteError] = useState<string | null>(null)
 
-  const handleDeleteResponse = () => {
-    // In a real application, this would make an API call to delete the response
-    console.log("Delete response:", response.id)
+  console.log(`Rendering ResponseCard ${response.id}: isDeleting=${isDeleting}, isAnnotating=${isAnnotating}`) // <-- ADD THIS
+
+  const handleDeleteResponse = async () => {
+    console.log("handleDeleteResponse called!") // <-- ADD THIS
+    const targetId = response.annotation_target_id
+    if (!targetId) {
+      console.error("Annotation target ID is missing for deletion:", response.id)
+      setDeleteError("Cannot delete: Missing target ID.")
+      return
+    }
+
+    setIsDeleting(true)
+    setDeleteError(null)
+
+    const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ""
+    const GUEST_USER_ID_HEADER = "X-Guest-User-Id"
+    const apiUrl = `${API_BASE_URL}/mock-next/${projectId}/annotation-targets/${targetId}`
+    const guestUserId = localStorage.getItem("guestUserId")
+    const headers: HeadersInit = {}
+    if (guestUserId) {
+      headers[GUEST_USER_ID_HEADER] = guestUserId
+    }
+
+    console.log(`Attempting to delete target ${targetId} at ${apiUrl}`)
+
+    try {
+      const apiResponse = await fetch(apiUrl, {
+        method: "DELETE",
+        headers: headers,
+      })
+
+      if (!apiResponse.ok && apiResponse.status !== 204) {
+        let errorDetail = `HTTP error! status: ${apiResponse.status}`
+        try {
+          const errorData = await apiResponse.json()
+          errorDetail += ` - ${errorData.detail || "Unknown error"}`
+        } catch (jsonError) {
+          // Ignore if response is not JSON
+        }
+        throw new Error(errorDetail)
+      }
+
+      console.log("Target deleted successfully:", targetId)
+
+      if (onResponseDeleted) {
+        console.log("Calling onResponseDeleted callback...")
+        onResponseDeleted(targetId)
+      }
+    } catch (error: any) {
+      console.error("Failed to delete target:", error)
+      setDeleteError(error.message || "Failed to delete target")
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   const handleAnnotationSubmit = async (reward: number) => {
-    if (!response.annotation_target_id) {
+    const targetId = response.annotation_target_id
+    if (!targetId) {
       console.error("Annotation target ID is missing for this response:", response.id)
       setAnnotationError("Cannot annotate: Missing target ID.")
       return
@@ -134,7 +197,7 @@ export function ResponseCard({
 
     const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ""
     const GUEST_USER_ID_HEADER = "X-Guest-User-Id"
-    const apiUrl = `${API_BASE_URL}/mock-next/${projectId}/annotation-targets/${response.annotation_target_id}/annotations`
+    const apiUrl = `${API_BASE_URL}/mock-next/${projectId}/annotation-targets/${targetId}/annotations`
     const guestUserId = localStorage.getItem("guestUserId")
     const headers: HeadersInit = {
       "Content-Type": "application/json",
@@ -145,7 +208,7 @@ export function ResponseCard({
 
     const body = JSON.stringify({
       reward: reward,
-      annotation_metadata: { submittedFrom: "ResponseCard" }, // Example metadata
+      annotation_metadata: { submittedFrom: "ResponseCard" },
     })
 
     console.log(`Submitting annotation to ${apiUrl} with reward ${reward}`)
@@ -170,11 +233,69 @@ export function ResponseCard({
 
       const newAnnotationData = await apiResponse.json()
       console.log("Annotation submitted successfully:", newAnnotationData)
+
+      if (onAnnotationAdded) {
+        console.log("Calling onAnnotationAdded callback...")
+        onAnnotationAdded(targetId, newAnnotationData)
+      }
     } catch (error: any) {
       console.error("Failed to submit annotation:", error)
       setAnnotationError(error.message || "Failed to submit annotation")
     } finally {
       setIsAnnotating(false)
+    }
+  }
+
+  const handleDeleteAnnotation = async (annotationId: string) => {
+    const targetId = response.annotation_target_id
+    if (!targetId) {
+      console.error("Cannot delete annotation: Missing target ID for the response.")
+      setAnnotationDeleteError("Cannot delete annotation: Response target ID missing.")
+      return
+    }
+
+    setDeletingAnnotationId(annotationId) // Show loading state for this specific annotation
+    setAnnotationDeleteError(null)
+
+    const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ""
+    const GUEST_USER_ID_HEADER = "X-Guest-User-Id"
+    const apiUrl = `${API_BASE_URL}/mock-next/${projectId}/annotations/${annotationId}`
+    const guestUserId = localStorage.getItem("guestUserId")
+    const headers: HeadersInit = {}
+    if (guestUserId) {
+      headers[GUEST_USER_ID_HEADER] = guestUserId
+    }
+
+    console.log(`Attempting to delete annotation ${annotationId} at ${apiUrl}`)
+
+    try {
+      const apiResponse = await fetch(apiUrl, {
+        method: "DELETE",
+        headers: headers,
+      })
+
+      if (!apiResponse.ok && apiResponse.status !== 204) {
+        let errorDetail = `HTTP error! status: ${apiResponse.status}`
+        try {
+          const errorData = await apiResponse.json()
+          errorDetail += ` - ${errorData.detail || "Unknown error"}`
+        } catch (jsonError) {
+          // Ignore if response is not JSON
+        }
+        throw new Error(errorDetail)
+      }
+
+      console.log("Annotation deleted successfully:", annotationId)
+
+      if (onAnnotationDeleted) {
+        console.log("Calling onAnnotationDeleted callback...")
+        onAnnotationDeleted(targetId, annotationId)
+      }
+    } catch (error: any) {
+      console.error("Failed to delete annotation:", error)
+      setAnnotationDeleteError(`Failed to delete annotation ${annotationId}: ${error.message || "Unknown error"}`)
+    } finally {
+      setDeletingAnnotationId(null) // Clear loading state
     }
   }
 
@@ -211,8 +332,14 @@ export function ResponseCard({
             <Button variant="outline" size="sm">
               <RefreshCw className="h-3.5 w-3.5" />
             </Button>
-            <Button variant="outline" size="sm" className="text-red-600 hover:bg-red-50" onClick={handleDeleteResponse}>
-              <Trash2 className="h-3.5 w-3.5" />
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-red-600 hover:bg-red-50"
+              onClick={handleDeleteResponse}
+              disabled={isDeleting || isAnnotating}
+            >
+              {isDeleting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
             </Button>
           </div>
         </div>
@@ -267,18 +394,31 @@ export function ResponseCard({
         </div>
 
         {annotationError && <div className="text-red-500 text-sm">{annotationError}</div>}
+        {deleteError && <div className="text-red-500 text-sm w-full">{deleteError}</div>}
+        {annotationDeleteError && <div className="text-red-500 text-sm w-full">{annotationDeleteError}</div>}
 
         {!hideAnnotations && response.annotations.length > 0 && (
           <div className="w-full">
-            {response.annotations.map((annotation, index) => (
-              <div key={index} className="flex items-center justify-between py-1 border-t text-sm">
-                <div className="flex items-center gap-2">
+            {response.annotations.map((annotation) => (
+              <div key={annotation.id} className="flex items-center justify-between py-1 border-t text-sm">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-medium">Reward: {annotation.reward}</span>
                   <span className="text-gray-500">By: {annotation.by}</span>
                   <span className="text-gray-500">At: {new Date(annotation.at).toLocaleString()}</span>
                 </div>
-                <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
-                  <X className="h-3.5 w-3.5 text-red-500" />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 w-6 p-0"
+                  onClick={() => handleDeleteAnnotation(annotation.id)}
+                  disabled={deletingAnnotationId === annotation.id || isAnnotating}
+                  title="Delete this annotation"
+                >
+                  {deletingAnnotationId === annotation.id ? (
+                    <RefreshCw className="h-3.5 w-3.5 text-gray-500 animate-spin" />
+                  ) : (
+                    <X className="h-3.5 w-3.5 text-red-500" />
+                  )}
                 </Button>
               </div>
             ))}

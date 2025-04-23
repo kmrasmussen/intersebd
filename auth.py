@@ -39,7 +39,7 @@ class UserSchema(BaseModel):
     created_at: datetime  # Assuming datetime is imported or use appropriate type
 
     class Config:
-        from_attributes = True  # Use orm_mode for older Pydantic versions
+        from_attributes = True 
 
 class UserInfo(BaseModel):
     sub: str

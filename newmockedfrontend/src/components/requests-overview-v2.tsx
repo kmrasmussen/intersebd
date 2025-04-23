@@ -26,7 +26,12 @@ interface MockRequest {
 }
 
 interface Message { role: string; content: string; }
-interface Annotation { reward: number; by: string; at: string; }
+interface Annotation {
+  id: string; // <-- ADD ID
+  reward: number;
+  by: string;
+  at: string;
+}
 
 interface ResponseDetail {
   id: string;
@@ -35,10 +40,11 @@ interface ResponseDetail {
   model: string;
   created: string;
   annotations: Annotation[];
-  metadata?: any;
+  metadata?: Record<string, any>;
   is_json: boolean;
   obeys_schema: boolean | null;
 }
+
 interface RequestDetailData {
   id: string;
   request_log_id: string;
@@ -96,20 +102,111 @@ export function RequestsOverviewV2({ projectId }: { projectId: string }) {
   const [detailsError, setDetailsError] = useState<string | null>(null)
 
   const [showAlternatives, setShowAlternatives] = useState(true)
-  const [newAlternative, setNewAlternative] = useState("")
+
+  const handleAnnotationAdded = (targetId: string, newAnnotationData: any) => {
+    console.log("handleAnnotationAdded called in Overview:", targetId, newAnnotationData);
+    setCurrentDetails(prevDetails => {
+      if (!prevDetails) return null;
+
+      const newAnnotation: Annotation = {
+        id: newAnnotationData.id, // <-- Ensure ID is added
+        reward: newAnnotationData.reward,
+        by: newAnnotationData.user_id ? String(newAnnotationData.user_id) : "Unknown",
+        at: new Date(newAnnotationData.timestamp).toISOString()
+      };
+
+      const updatedDetails = JSON.parse(JSON.stringify(prevDetails));
+
+      if (updatedDetails.mainResponse?.annotation_target_id === targetId) {
+        updatedDetails.mainResponse.annotations.push(newAnnotation);
+        console.log("Updated main response annotations");
+      } else {
+        const altIndex = updatedDetails.alternativeResponses.findIndex(
+          (alt: ResponseDetail) => alt.annotation_target_id === targetId
+        );
+        if (altIndex !== -1) {
+          updatedDetails.alternativeResponses[altIndex].annotations.push(newAnnotation);
+          console.log(`Updated alternative response annotations at index ${altIndex}`);
+        } else {
+          console.warn("Could not find matching response/alternative for targetId:", targetId);
+        }
+      }
+      return updatedDetails;
+    });
+  };
+
+  const handleResponseDeleted = (deletedTargetId: string) => {
+    console.log("handleResponseDeleted called in Overview with targetId:", deletedTargetId);
+    setCurrentDetails(prevDetails => {
+      if (!prevDetails) return null;
+
+      const updatedDetails = JSON.parse(JSON.stringify(prevDetails));
+
+      updatedDetails.alternativeResponses = updatedDetails.alternativeResponses.filter(
+        (alt: ResponseDetail) => alt.annotation_target_id !== deletedTargetId
+      );
+
+      console.log("Filtered alternatives:", updatedDetails.alternativeResponses);
+      return updatedDetails;
+    });
+  };
+
+  const handleAnnotationDeleted = (targetId: string, annotationId: string) => {
+    console.log("handleAnnotationDeleted called in Overview:", targetId, annotationId);
+    setCurrentDetails(prevDetails => {
+      if (!prevDetails) return null;
+
+      const updatedDetails = JSON.parse(JSON.stringify(prevDetails));
+
+      const updateAnnotations = (response: ResponseDetail | null) => {
+        if (response?.annotation_target_id === targetId) {
+          const initialLength = response.annotations.length;
+          response.annotations = response.annotations.filter(
+            (ann: Annotation) => ann.id !== annotationId
+          );
+          if (response.annotations.length < initialLength) {
+            console.log(`Removed annotation ${annotationId} from target ${targetId}`);
+          } else {
+            console.warn(`Could not find annotation ${annotationId} to remove from target ${targetId}`);
+          }
+        }
+        return response;
+      };
+
+      updatedDetails.mainResponse = updateAnnotations(updatedDetails.mainResponse);
+
+      updatedDetails.alternativeResponses = updatedDetails.alternativeResponses.map(updateAnnotations);
+
+      return updatedDetails;
+    });
+  };
+
+  const handleAlternativeAdded = (newAlternative: ResponseDetail) => {
+    console.log("handleAlternativeAdded called in Overview:", newAlternative);
+    setCurrentDetails(prevDetails => {
+      if (!prevDetails) return null;
+
+      const updatedDetails = JSON.parse(JSON.stringify(prevDetails));
+
+      updatedDetails.alternativeResponses.push(newAlternative);
+
+      console.log("Added new alternative:", newAlternative.id);
+      return updatedDetails;
+    });
+    setShowAlternatives(true);
+  };
 
   useEffect(() => {
     const fetchRequests = async () => {
       setIsLoading(true)
       setError(null)
       try {
-        // Use environment variable for the base URL
         const baseUrl = import.meta.env.VITE_API_BASE_URL;
         const apiUrl = `${baseUrl}/mock-next/${projectId}/requests-summary`
         console.log("Fetching from:", apiUrl)
 
         const response = await fetch(apiUrl, {
-          credentials: 'include' // <--- ADD THIS LINE
+          credentials: 'include'
         })
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`)
@@ -136,12 +233,11 @@ export function RequestsOverviewV2({ projectId }: { projectId: string }) {
       setDetailsError(null)
       setCurrentDetails(null)
       try {
-        // Use environment variable for the base URL
         const baseUrl = import.meta.env.VITE_API_BASE_URL;
         const apiUrl = `${baseUrl}/mock-next/${projectId}/requests/${id}`
         console.log("Fetching details from:", apiUrl)
         const response = await fetch(apiUrl, {
-          credentials: 'include' // <--- ADD THIS LINE
+          credentials: 'include'
         })
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`)
@@ -270,6 +366,8 @@ export function RequestsOverviewV2({ projectId }: { projectId: string }) {
                             <ResponseSection
                               response={currentDetails.mainResponse}
                               projectId={projectId}
+                              onAnnotationAdded={handleAnnotationAdded}
+                              onAnnotationDeleted={handleAnnotationDeleted}
                             />
                           </div>
 
@@ -279,10 +377,17 @@ export function RequestsOverviewV2({ projectId }: { projectId: string }) {
                               showAlternatives={showAlternatives}
                               setShowAlternatives={setShowAlternatives}
                               projectId={projectId}
+                              onAnnotationAdded={handleAnnotationAdded}
+                              onResponseDeleted={handleResponseDeleted}
+                              onAnnotationDeleted={handleAnnotationDeleted}
                             />
                           </div>
 
-                          <NewAlternativeForm newAlternative={newAlternative} setNewAlternative={setNewAlternative} />
+                          <NewAlternativeForm
+                            projectId={projectId}
+                            requestId={currentDetails.id}
+                            onAlternativeAdded={handleAlternativeAdded}
+                          />
                         </div>
                       ) : (
                         <div>No details available.</div>

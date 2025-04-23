@@ -1,9 +1,8 @@
-from sqlalchemy import Column, Integer, String, DateTime, JSON, Float, Boolean, ForeignKey, Table, Text
+from sqlalchemy import Column, Integer, String, DateTime, JSON, Float, Boolean, ForeignKey, Table, Text, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID # Use PostgreSQL UUID type
 from sqlalchemy.sql import func
 import uuid
 from sqlalchemy.orm import relationship
-from sqlalchemy import UniqueConstraint
 from database import Base
 
 annotation_target_annotation_link = Table(
@@ -59,6 +58,8 @@ class CompletionProject(Base):
     completion_requests = relationship("CompletionsRequest", back_populates="project")
 
     call_keys = relationship("CompletionProjectCallKeys", back_populates="project", cascade="all, delete-orphan")
+
+    json_schemas = relationship("ProjectJsonSchema", back_populates="project", cascade="all, delete-orphan")
 
 class ProjectMembership(Base):
     __tablename__ = 'project_memberships'
@@ -259,3 +260,20 @@ class AgentWidget(Base):
     n_calls = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
     user = relationship("User")
+
+class ProjectJsonSchema(Base):
+    __tablename__ = "project_json_schemas"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("completion_projects.id", ondelete="CASCADE"), # Cascade delete if project is deleted
+        nullable=False,
+        index=True
+    )
+    schema_content = Column(JSON, nullable=False) # Store the JSON schema itself
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    is_active = Column(Boolean, default=True, nullable=False) # To potentially disable schemas
+
+    # Relationship back to the project
+    project = relationship("CompletionProject", back_populates="json_schemas")

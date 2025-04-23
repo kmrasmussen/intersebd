@@ -3,37 +3,38 @@
 import { Button } from "@/components/ui/button";
 import { ResponseCard } from "@/components/response-card";
 
-// Ensure Response type includes annotation_target_id
+// Define/Import Response and Annotation types
+type Annotation = { id: string; reward: number; by: string; at: string; };
 type Response = {
   id: string;
-  annotation_target_id?: string | null; // <-- Ensure this is present
+  annotation_target_id?: string | null;
   content: string;
   model: string;
   created: string;
-  annotations: Array<{
-    reward: number;
-    by: string; // Consider if this should be Optional<string> or Optional<uuid.UUID>
-    at: string;
-  }>;
+  annotations: Annotation[];
   metadata?: Record<string, any>;
   is_json: boolean;
   obeys_schema: boolean | null;
 };
 
-// Add projectId to props
 type AlternativesSectionProps = {
   alternatives: Response[];
   showAlternatives: boolean;
   setShowAlternatives: (show: boolean) => void;
-  projectId: string; // <-- ADD projectId prop type
+  projectId: string;
+  onAnnotationAdded: (targetId: string, newAnnotationData: any) => void;
+  onResponseDeleted: (targetId: string) => void;
+  onAnnotationDeleted: (targetId: string, annotationId: string) => void; // <-- Add prop type
 };
 
-// Update function signature to accept projectId
 export function AlternativesSection({
   alternatives,
   showAlternatives,
   setShowAlternatives,
-  projectId, // <-- ACCEPT projectId prop
+  projectId,
+  onAnnotationAdded,
+  onResponseDeleted,
+  onAnnotationDeleted, // <-- Accept prop
 }: AlternativesSectionProps) {
   return (
     <>
@@ -47,12 +48,14 @@ export function AlternativesSection({
       {showAlternatives && alternatives.length > 0 && (
         <div className="space-y-4">
           {alternatives.map((response, index) => (
-            // Pass projectId down to ResponseCard
             <ResponseCard
-              key={response.id || index} // Use response.id if available and unique
+              key={response.id || index}
               response={response}
               isAlternative
-              projectId={projectId} // <-- PASS projectId here
+              projectId={projectId}
+              onAnnotationAdded={onAnnotationAdded}
+              onResponseDeleted={onResponseDeleted}
+              onAnnotationDeleted={onAnnotationDeleted} // <-- Pass down
             />
           ))}
         </div>

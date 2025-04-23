@@ -8,12 +8,16 @@ from datetime import datetime, timezone
 
 # --- DB and Auth Imports ---
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
-from sqlalchemy.orm import selectinload, joinedload
+from sqlalchemy import select, func, update
+from sqlalchemy.orm import selectinload, joinedload, aliased
+from sqlalchemy.exc import IntegrityError  # Import IntegrityError
 from database import get_db
 from auth import verify_project_membership, get_current_user
 import models
 from models import User
+from jsonschema import validate as validate_jsonschema  # Import the validator function
+from jsonschema import Draft7Validator  # Import the specific validator class
+from jsonschema.exceptions import ValidationError as JsonSchemaValidationError  # Import the specific exception
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +39,7 @@ class Message(BaseModel):
     content: str
 
 class Annotation(BaseModel):
+    id: str
     reward: int
     by: str
     at: str
@@ -78,6 +83,25 @@ class AnnotationResponse(BaseModel):
     reward: float
     annotation_metadata: Optional[Dict[str, Any]]
     annotation_target_id: uuid.UUID
+
+    class Config:
+        from_attributes = True
+
+class CreateAlternativeRequest(BaseModel):
+    alternative_content: str = Field(..., description="The content of the alternative response.")
+
+class CreateAlternativeResponse(ResponseDetail):
+    pass
+
+class JsonSchemaContent(BaseModel):
+    schema_content: Dict[str, Any] = Field(..., description="The JSON schema content.")
+
+class ProjectJsonSchemaResponse(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    schema_content: Dict[str, Any]
+    created_at: datetime
+    is_active: bool  # Will always be true when setting as current
 
     class Config:
         from_attributes = True
@@ -126,25 +150,25 @@ def map_annotations(db_annotations: Optional[List[models.CompletionAnnotation]])
         except (ValueError, TypeError):
             reward_int = 0 # Default to 0 if conversion fails
 
-        # --- Use user_id instead of rater_id ---
         annotator_str = "Unknown"
         if ann.user_id:
-            # Convert the UUID user_id to string for the 'by' field
             annotator_str = str(ann.user_id)
-        # --- End change ---
 
         mapped.append(Annotation(
+            id=str(ann.id),
             reward=reward_int,
-            by=annotator_str,             # <-- USE new variable
+            by=annotator_str,
             at=format_timestamp(ann.timestamp)
         ))
     return mapped
 
 def map_to_response_detail(
     response_obj: Union[models.CompletionResponse, models.CompletionAlternative],
-    request_model: str
+    request_model: str,
+    active_schema: Optional[Dict[str, Any]] = None
 ) -> ResponseDetail:
-    """Maps CompletionResponse or CompletionAlternative to Pydantic ResponseDetail."""
+    """Maps CompletionResponse or CompletionAlternative to Pydantic ResponseDetail,
+       performing JSON and schema validation if an active schema is provided."""
     content = None
     created_ts = None
     db_annotations = None
@@ -152,7 +176,7 @@ def map_to_response_detail(
     annotation_target_id_str: Optional[str] = None
 
     if isinstance(response_obj, models.CompletionResponse):
-        response_id = response_obj.id
+        response_id = str(response_obj.id)
         content = response_obj.choice_content
         created_ts = response_obj.created
         if response_obj.annotation_target:
@@ -174,7 +198,23 @@ def map_to_response_detail(
         raise TypeError("Invalid object type for mapping to ResponseDetail")
 
     is_json = check_json(content)
-    obeys_schema = None
+    obeys_schema: Optional[bool] = None
+
+    if is_json and active_schema and content:
+        try:
+            parsed_content = json.loads(content)
+            validate_jsonschema(instance=parsed_content, schema=active_schema)
+            obeys_schema = True
+            logger.debug(f"Response content for {response_id} validated successfully against active schema.")
+        except json.JSONDecodeError as json_err:
+            logger.warning(f"JSONDecodeError during schema validation for {response_id} despite check_json passing: {json_err}")
+            obeys_schema = False
+        except JsonSchemaValidationError as schema_err:
+            logger.debug(f"Response content for {response_id} failed schema validation: {schema_err.message}")
+            obeys_schema = False
+        except Exception as val_err:
+            logger.error(f"Unexpected error during schema validation for {response_id}: {val_err}", exc_info=True)
+            obeys_schema = False
 
     return ResponseDetail(
         id=response_id or "N/A",
@@ -293,12 +333,35 @@ async def get_request_details(
 ):
     """
     Retrieves full details for a specific completion request within a project.
+    Also fetches the current project schema and validates response content against it.
     Requires the user to be a member of the project.
     """
     logger.info(f"Fetching details for request ID: {request_id} in project {project_id} for user {membership.user_id}")
 
+    # --- Fetch Active Schema Concurrently (or sequentially) ---
+    active_schema_content: Optional[Dict[str, Any]] = None
     try:
-        stmt = (
+        stmt_schema = (
+            select(models.ProjectJsonSchema)
+            .where(models.ProjectJsonSchema.project_id == project_id)
+            .where(models.ProjectJsonSchema.is_active == True)
+            .order_by(models.ProjectJsonSchema.created_at.desc())
+        )
+        result_schema = await db.execute(stmt_schema)
+        active_schema_obj = result_schema.scalars().first()
+        if active_schema_obj:
+            active_schema_content = active_schema_obj.schema_content
+            logger.info(f"Found active schema {active_schema_obj.id} for validation.")
+        else:
+            logger.info(f"No active schema found for project {project_id}. Skipping schema validation.")
+    except Exception as schema_exc:
+        # Log error but don't fail the request, just skip schema validation
+        logger.error(f"Error fetching active schema for project {project_id}: {schema_exc}", exc_info=True)
+    # --- End Fetch Active Schema ---
+
+    try:
+        # --- Fetch Request Details ---
+        stmt_req = (
             select(models.CompletionsRequest)
             .where(models.CompletionsRequest.id == request_id)
             .where(models.CompletionsRequest.project_id == project_id)
@@ -311,9 +374,9 @@ async def get_request_details(
                 .selectinload(models.AnnotationTarget.annotations)
             )
         )
-
-        result = await db.execute(stmt)
-        req = result.scalars().first()
+        result_req = await db.execute(stmt_req)
+        req = result_req.scalars().first()
+        # --- End Fetch Request Details ---
 
         if not req:
             logger.warning(f"CompletionsRequest with ID {request_id} not found in project {project_id}")
@@ -321,7 +384,6 @@ async def get_request_details(
 
         req_id_str = str(req.id)
         project_id_str = str(req.project_id)
-
         request_timestamp_str = "N/A"
         if req.completion_response and req.completion_response.created:
             request_timestamp_str = format_timestamp(req.completion_response.created)
@@ -341,10 +403,15 @@ async def get_request_details(
             request_timestamp=request_timestamp_str
         )
 
+        # --- Map Responses with Schema Validation ---
         main_response_detail: Optional[ResponseDetail] = None
         if req.completion_response:
             try:
-                main_response_detail = map_to_response_detail(req.completion_response, req.model or "Unknown")
+                main_response_detail = map_to_response_detail(
+                    req.completion_response,
+                    req.model or "Unknown",
+                    active_schema=active_schema_content
+                )
             except Exception as map_err:
                 logger.error(f"Error mapping main response for request {req_id_str}: {map_err}", exc_info=True)
 
@@ -352,10 +419,15 @@ async def get_request_details(
         if req.alternatives:
             for alt in req.alternatives:
                 try:
-                    alt_detail = map_to_response_detail(alt, req.model or "Unknown")
+                    alt_detail = map_to_response_detail(
+                        alt,
+                        req.model or "Unknown",
+                        active_schema=active_schema_content
+                    )
                     alternative_response_details.append(alt_detail)
                 except Exception as map_err:
                     logger.error(f"Error mapping alternative response {alt.id} for request {req_id_str}: {map_err}", exc_info=True)
+        # --- End Mapping ---
 
         name = f"Request {req_id_str[:8]}..."
         if req.messages and isinstance(req.messages, list) and len(req.messages) > 0:
@@ -398,7 +470,6 @@ async def get_request_details(
             detail="Failed to retrieve request details due to an internal error."
         )
 
-# --- NEW: Create Annotation Endpoint ---
 @router.post(
     "/{project_id}/annotation-targets/{annotation_target_id}/annotations",
     response_model=AnnotationResponse,
@@ -420,11 +491,10 @@ async def create_annotation(
     """
     logger.info(f"Attempting to create annotation for target {annotation_target_id} in project {project_id} by user {current_user.id if current_user else 'Guest/Unknown'}")
 
-    # Fetch the AnnotationTarget AND eagerly load its annotations relationship
     stmt_target = (
         select(models.AnnotationTarget)
         .where(models.AnnotationTarget.id == annotation_target_id)
-        .options(selectinload(models.AnnotationTarget.annotations)) # <-- ADD THIS EAGER LOAD
+        .options(selectinload(models.AnnotationTarget.annotations))
     )
     result_target = await db.execute(stmt_target)
     target = result_target.scalars().first()
@@ -442,13 +512,12 @@ async def create_annotation(
             annotation_metadata=request_data.annotation_metadata
         )
         db.add(new_annotation)
-        await db.flush() # Get the ID for the new annotation
+        await db.flush()
 
-        # Now append should work without triggering a lazy load
         target.annotations.append(new_annotation)
 
         await db.commit()
-        await db.refresh(new_annotation) # Refresh to get timestamp etc.
+        await db.refresh(new_annotation)
         logger.info(f"Successfully created annotation {new_annotation.id} for target {annotation_target_id}")
 
     except Exception as e:
@@ -459,7 +528,6 @@ async def create_annotation(
             detail="Failed to save annotation due to an internal error."
         )
 
-    # Prepare response manually
     response_data = AnnotationResponse(
         id=new_annotation.id,
         timestamp=new_annotation.timestamp,
@@ -470,3 +538,293 @@ async def create_annotation(
     )
 
     return response_data
+
+@router.delete(
+    "/{project_id}/annotation-targets/{annotation_target_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete an AnnotationTarget and its associated CompletionResponse or CompletionAlternative."
+)
+async def delete_annotation_target(
+    project_id: uuid.UUID = Path(..., description="The UUID of the project"),
+    annotation_target_id: uuid.UUID = Path(..., description="The UUID of the AnnotationTarget to delete"),
+    db: AsyncSession = Depends(get_db),
+    membership: models.ProjectMembership = Depends(verify_project_membership),
+):
+    """
+    Deletes an AnnotationTarget. Due to cascade settings in the models,
+    this should also delete the linked CompletionResponse or CompletionAlternative.
+    Requires the user to be a member of the project.
+    """
+    logger.info(f"Attempting to delete AnnotationTarget {annotation_target_id} in project {project_id} by user {membership.user_id}")
+
+    stmt = select(models.AnnotationTarget).where(models.AnnotationTarget.id == annotation_target_id)
+    result = await db.execute(stmt)
+    target_to_delete = result.scalars().first()
+
+    if not target_to_delete:
+        logger.warning(f"AnnotationTarget with ID {annotation_target_id} not found for deletion.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Annotation target not found.")
+
+    try:
+        await db.delete(target_to_delete)
+        await db.commit()
+        logger.info(f"Successfully deleted AnnotationTarget {annotation_target_id}")
+        return None
+
+    except Exception as e:
+        await db.rollback()
+        logger.exception(f"Error deleting AnnotationTarget {annotation_target_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete annotation target due to an internal error."
+        )
+
+@router.delete(
+    "/{project_id}/annotations/{annotation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a specific CompletionAnnotation."
+)
+async def delete_annotation(
+    project_id: uuid.UUID = Path(..., description="The UUID of the project (for authorization)"),
+    annotation_id: uuid.UUID = Path(..., description="The UUID of the CompletionAnnotation to delete"),
+    db: AsyncSession = Depends(get_db),
+    membership: models.ProjectMembership = Depends(verify_project_membership),
+):
+    """
+    Deletes a specific CompletionAnnotation record by its ID.
+    Requires the user to be a member of the project associated with the annotation's target.
+    """
+    logger.info(f"Attempting to delete Annotation {annotation_id} within project scope {project_id} by user {membership.user_id}")
+
+    CR = models.CompletionResponse
+    CA = models.CompletionAlternative
+    AT = models.AnnotationTarget
+    Ann = models.CompletionAnnotation
+    ReqFromResp = aliased(models.CompletionsRequest)
+    ReqFromAlt = aliased(models.CompletionsRequest)
+
+    stmt = (
+        select(Ann)
+        .join(Ann.annotation_targets)
+        .outerjoin(CR, AT.completion_response)
+        .outerjoin(CA, AT.completion_alternative)
+        .outerjoin(ReqFromResp, CR.completion_request)
+        .outerjoin(ReqFromAlt, CA.original_completion_request)
+        .where(Ann.id == annotation_id)
+        .where(
+            (ReqFromResp.project_id == project_id) |
+            (ReqFromAlt.project_id == project_id)
+        )
+        .limit(1)
+    )
+
+    result = await db.execute(stmt)
+    annotation_to_delete = result.scalars().first()
+
+    if not annotation_to_delete:
+        logger.warning(f"Annotation with ID {annotation_id} not found or not accessible within project {project_id}.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Annotation not found.")
+
+    try:
+        await db.delete(annotation_to_delete)
+        await db.commit()
+        logger.info(f"Successfully deleted Annotation {annotation_id}")
+        return None
+
+    except Exception as e:
+        await db.rollback()
+        logger.exception(f"Error deleting Annotation {annotation_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete annotation due to an internal error."
+        )
+
+@router.post(
+    "/{project_id}/requests/{request_id}/alternatives",
+    response_model=CreateAlternativeResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new alternative response for a specific request."
+)
+async def create_alternative(
+    project_id: uuid.UUID = Path(..., description="The UUID of the project"),
+    request_id: uuid.UUID = Path(..., description="The UUID of the original CompletionsRequest"),
+    request_data: CreateAlternativeRequest = Body(...),
+    db: AsyncSession = Depends(get_db),
+    membership: models.ProjectMembership = Depends(verify_project_membership),
+):
+    """
+    Creates a new CompletionAlternative for an existing CompletionsRequest.
+    Also creates the associated AnnotationTarget.
+    Requires the user to be a member of the project.
+    """
+    logger.info(f"Attempting to create alternative for request {request_id} in project {project_id} by user {membership.user_id}")
+
+    stmt_req = select(models.CompletionsRequest).where(
+        models.CompletionsRequest.id == request_id,
+        models.CompletionsRequest.project_id == project_id
+    )
+    result_req = await db.execute(stmt_req)
+    original_request = result_req.scalars().first()
+
+    if not original_request:
+        logger.warning(f"Original CompletionsRequest {request_id} not found in project {project_id}.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Original request not found in this project.")
+
+    try:
+        new_annotation_target = models.AnnotationTarget()
+        db.add(new_annotation_target)
+        await db.flush()
+        target_id = new_annotation_target.id
+
+        new_alternative = models.CompletionAlternative(
+            original_completion_request_id=request_id,
+            project_id=project_id,
+            alternative_content=request_data.alternative_content,
+            annotation_target_id=target_id,
+        )
+        db.add(new_alternative)
+
+        await db.flush([new_alternative])
+        alternative_id = new_alternative.id
+        if alternative_id is None:
+            logger.error("!!! Critical: Alternative ID is None after explicit flush !!!")
+            raise HTTPException(status_code=500, detail="Failed to generate alternative ID.")
+        logger.debug(f"Alternative ID after flush: {alternative_id}")
+
+        await db.commit()
+        logger.debug(f"Committed alternative ID: {alternative_id}")
+
+        stmt_load = (
+            select(models.CompletionAlternative)
+            .where(models.CompletionAlternative.id == alternative_id)
+            .options(
+                selectinload(models.CompletionAlternative.annotation_target)
+                .selectinload(models.AnnotationTarget.annotations)
+            )
+        )
+        result_load = await db.execute(stmt_load)
+        loaded_alternative = result_load.scalars().one()
+
+        logger.info(f"Successfully created alternative {loaded_alternative.id} for request {request_id}")
+
+        response_data = map_to_response_detail(loaded_alternative, original_request.model or "Unknown")
+        return response_data
+
+    except Exception as e:
+        await db.rollback()
+        logger.exception(f"Error creating alternative for request {request_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save alternative response due to an internal error."
+        )
+
+@router.post(
+    "/{project_id}/schemas",
+    response_model=ProjectJsonSchemaResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new JSON schema version and set it as the project's current schema."
+)
+async def create_and_set_project_schema(
+    project_id: uuid.UUID = Path(..., description="The UUID of the project"),
+    schema_data: JsonSchemaContent = Body(...),
+    db: AsyncSession = Depends(get_db),
+    membership: models.ProjectMembership = Depends(verify_project_membership),
+):
+    """
+    Creates a new ProjectJsonSchema record, marks it as active,
+    and deactivates all other schemas for the project.
+    Validates that the provided content is a valid JSON Schema document.
+    Relies on the 'is_active' flag and creation timestamp.
+    """
+    logger.info(f"Attempting to create and set new schema for project {project_id} by user {membership.user_id}")
+
+    try:
+        validate_jsonschema(instance=schema_data.schema_content, schema=Draft7Validator.META_SCHEMA)
+        logger.debug(f"Schema content for project {project_id} validated successfully against meta-schema.")
+    except JsonSchemaValidationError as e:
+        logger.warning(f"Invalid JSON Schema provided for project {project_id}: {e.message}", exc_info=False)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid JSON Schema: {e.message}"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error during JSON Schema validation for project {project_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred during schema validation."
+        )
+
+    try:
+        stmt_deactivate = (
+            update(models.ProjectJsonSchema)
+            .where(models.ProjectJsonSchema.project_id == project_id)
+            .where(models.ProjectJsonSchema.is_active == True)
+            .values(is_active=False)
+            .execution_options(synchronize_session=False)
+        )
+        result = await db.execute(stmt_deactivate)
+        logger.debug(f"Deactivated {result.rowcount} previous schema(s) for project {project_id}")
+
+        new_schema = models.ProjectJsonSchema(
+            project_id=project_id,
+            schema_content=schema_data.schema_content,
+            is_active=True
+        )
+        db.add(new_schema)
+        await db.flush()
+
+        logger.debug(f"Project {project_id}: Attempting to commit new active schema {new_schema.id}")
+        await db.commit()
+        logger.debug(f"Project {project_id}: Commit successful. New active schema is {new_schema.id}")
+
+        await db.refresh(new_schema)
+
+        logger.info(f"Successfully created schema {new_schema.id} and set as active for project {project_id}")
+        return new_schema
+
+    except IntegrityError as e:
+        await db.rollback()
+        logger.error(f"Database integrity error creating schema for project {project_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Database integrity error: {e.orig}"
+        )
+    except Exception as e:
+        await db.rollback()
+        logger.exception(f"Error during database operation for schema creation (project {project_id}): {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save schema due to an internal database error."
+        )
+
+@router.get(
+    "/{project_id}/schemas/current",
+    response_model=ProjectJsonSchemaResponse,
+    summary="Get the currently active JSON schema for the project (latest active version)."
+)
+async def get_current_project_schema(
+    project_id: uuid.UUID = Path(..., description="The UUID of the project"),
+    db: AsyncSession = Depends(get_db),
+    membership: models.ProjectMembership = Depends(verify_project_membership),
+):
+    """
+    Retrieves the most recently created JSON schema for the project
+    where the 'is_active' flag is True.
+    """
+    logger.info(f"Fetching latest active schema for project {project_id} by user {membership.user_id}")
+
+    stmt = (
+        select(models.ProjectJsonSchema)
+        .where(models.ProjectJsonSchema.project_id == project_id)
+        .where(models.ProjectJsonSchema.is_active == True)
+        .order_by(models.ProjectJsonSchema.created_at.desc())
+    )
+    result = await db.execute(stmt)
+    current_schema = result.scalars().first()
+
+    if not current_schema:
+        logger.info(f"Project {project_id} does not have an active schema.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No active schema found for this project.")
+
+    logger.info(f"Found latest active schema {current_schema.id} created at {current_schema.created_at} for project {project_id}")
+    return current_schema

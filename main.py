@@ -182,7 +182,7 @@ class CompletionsRaterNotificationRequestDto(BaseModel):
     intercept_key: uuid.UUID
 
     class Config:
-        from_attributes = True # Changed from orm_mode
+        from_attributes = True
 
 class CompletionsRaterNotificationResponseDto(BaseModel):
     notification_id: str
@@ -226,7 +226,7 @@ class CompletionChoiceDetailDto(BaseModel):
   content: Optional[str] = None
 
   class Config:
-      from_attributes = True # Changed from orm_mode
+      from_attributes = True 
 
 class CompletionResponseDetailDto(BaseModel):
   id: str
@@ -315,7 +315,6 @@ async def get_rater_notification_details(notification_id: uuid.UUID, session: As
 
         # 4. Assemble the response DTO
         # Map SQLAlchemy models to Pydantic DTOs
-        # Note: Pydantic V2 with orm_mode=True handles much of this automatically if field names match
         response_dto = RaterNotificationDetailsResponseDto(
             notification=CompletionsRaterNotificationRequestDto.from_orm(notification), # Map notification
             completion_request=CompletionsRequestDetailDto.from_orm(completion_request), # Map request
@@ -342,13 +341,13 @@ class CompletionsRaterNotificationsListItemResponseDto(BaseModel):
   intercept_key: uuid.UUID
   timestamp: datetime
   class Config:
-      from_attributes = True # Changed from orm_mode
+      from_attributes = True
 
 class CompletionsNotificationsListResponseDto(BaseModel):
     notifications: List[CompletionsRaterNotificationsListItemResponseDto]
 
     class Config:
-        from_attributes = True # Changed from orm_mode
+        from_attributes = True 
 # ... rest of the file ...
  
 @app.post("/v1/chat/completions/rater/notifications/list", response_model=CompletionsNotificationsListResponseDto)

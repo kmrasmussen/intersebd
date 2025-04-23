@@ -4,7 +4,7 @@ import { useState, useMemo } from "react"
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Check, RefreshCw, X, ThumbsUp, ThumbsDown, Trash2, Copy, CheckCircle2 } from "lucide-react"
+import { Check, RefreshCw, X, ThumbsUp, ThumbsDown, Trash2, Copy, CheckCircle2, XCircle, AlertCircle } from "lucide-react"
 
 type Annotation = {
   id: string // <-- ADD ID FIELD
@@ -30,7 +30,7 @@ type ResponseMetadata = {
 type Response = {
   id: string
   annotation_target_id?: string | null
-  content: string
+  content: string 
   model: string
   created: string
   annotations: Annotation[]
@@ -303,7 +303,7 @@ export function ResponseCard({
     <Card className="border-gray-200">
       <CardHeader className="bg-gray-50 py-3 px-4 border-b">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <Badge
               variant={isAlternative ? "secondary" : "default"}
               className={isAlternative ? "bg-gray-200 text-gray-800" : ""}
@@ -311,19 +311,38 @@ export function ResponseCard({
               {isAlternative ? "Alternative" : "Response"}
             </Badge>
             <span className="text-sm text-gray-500">{new Date(response.created).toLocaleString()}</span>
+
+            {/* --- START: Validation Badges (Adjusted "Not JSON" Style) --- */}
+
+            {/* 1. Show "Not JSON" using the "Invalid Schema" style */}
+            {!response.is_json && (
+              <Badge variant="outline" className="bg-red-50 text-red-600 flex items-center gap-1"> {/* <-- CHANGE variant and classes */}
+                <XCircle className="h-3 w-3" /> Not JSON
+              </Badge>
+            )}
+
+            {/* 2. Show "JSON" if applicable */}
             {response.is_json && (
               <Badge variant="outline" className="bg-blue-50 text-blue-600">
                 JSON
               </Badge>
             )}
-            {response.obeys_schema !== null && (
-              <Badge
-                variant="outline"
-                className={response.obeys_schema ? "bg-green-50 text-green-600" : "bg-red-50 text-red-600"}
-              >
-                {response.obeys_schema ? "Valid Schema" : "Invalid Schema"}
+
+            {/* 3. Show "Valid Schema" if applicable */}
+            {response.is_json && response.obeys_schema === true && (
+              <Badge variant="outline" className="bg-green-50 text-green-600 flex items-center gap-1">
+                <CheckCircle2 className="h-3 w-3" /> Valid Schema
               </Badge>
             )}
+
+            {/* 4. Show "Invalid Schema" if applicable */}
+            {response.is_json && response.obeys_schema === false && (
+              <Badge variant="outline" className="bg-red-50 text-red-600 flex items-center gap-1">
+                 <AlertCircle className="h-3 w-3" /> Invalid Schema
+              </Badge>
+            )}
+
+            {/* --- END: Validation Badges --- */}
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => setShowRawData(!showRawData)}>

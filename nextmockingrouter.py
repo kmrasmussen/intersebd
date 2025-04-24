@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Path, HTTPException, Depends, status, Body
+from fastapi import APIRouter, Path, HTTPException, Depends, status, Body, Query
 from pydantic import BaseModel, Field
 from typing import List, Literal, Optional, Dict, Any, Union
 import uuid
@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 # --- DB and Auth Imports ---
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
-from sqlalchemy.orm import selectinload, joinedload, aliased
+from sqlalchemy.orm import selectinload, joinedload, aliased, contains_eager
 from sqlalchemy.exc import IntegrityError  # Import IntegrityError
 from database import get_db
 from auth import verify_project_membership, get_current_user
@@ -105,6 +105,9 @@ class ProjectJsonSchemaResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class SftRequestCountResponse(BaseModel):
+    sft_request_count: int
 
 # --- Helper Functions ---
 
@@ -239,29 +242,71 @@ router = APIRouter(
 async def get_requests_summary(
     project_id: uuid.UUID = Path(..., description="The UUID of the project"),
     db: AsyncSession = Depends(get_db),
-    membership: models.ProjectMembership = Depends(verify_project_membership)
+    membership: models.ProjectMembership = Depends(verify_project_membership),
+    sft_threshold: float = 0.75
 ):
     """
-    Retrieves a summary of completion requests for the specified project,
-    linked directly via project_id.
+    Retrieves a summary of completion requests for the specified project.
+    Calculates SFT status based on annotations and schema compliance.
     Requires the user to be a member of the project.
-    Annotation counts are currently mocked.
     """
-    logger.info(f"Fetcing requests summary for project ID: {project_id} for user {membership.user_id}")
+    logger.info(f"Fetching requests summary for project ID: {project_id} for user {membership.user_id}")
 
     try:
+        # --- Fetch Active Schema Once ---
+        active_schema_content: Optional[Dict[str, Any]] = None
+        try:
+            stmt_schema = (
+                select(models.ProjectJsonSchema)
+                .where(models.ProjectJsonSchema.project_id == project_id)
+                .where(models.ProjectJsonSchema.is_active == True)
+                .order_by(models.ProjectJsonSchema.created_at.desc())
+            )
+            result_schema = await db.execute(stmt_schema)
+            active_schema_obj = result_schema.scalars().first()
+            if active_schema_obj:
+                active_schema_content = active_schema_obj.schema_content
+                logger.debug(f"Found active schema {active_schema_obj.id} for request summary SFT checks.")
+            else:
+                logger.debug(f"No active schema found for project {project_id}. SFT checks will only use reward.")
+        except Exception as schema_exc:
+            logger.error(f"Error fetching active schema for request summary (project {project_id}): {schema_exc}", exc_info=True)
+            # Continue without schema validation if fetching fails
+        # --- End Fetch Active Schema ---
+
+        # --- Query with outerjoin reinstated for sorting ---
         stmt_requests = (
             select(models.CompletionsRequest)
             .where(models.CompletionsRequest.project_id == project_id)
-            .options(
-                selectinload(models.CompletionsRequest.completion_response),
-                selectinload(models.CompletionsRequest.alternatives)
-            )
+            # Add the outerjoin back specifically for the ORDER BY clause
             .outerjoin(models.CompletionResponse, models.CompletionsRequest.completion_response)
-            .order_by(models.CompletionResponse.created.desc().nullslast(), models.CompletionsRequest.id.desc())
+            .options(
+                # Keep the selectinload/joinedload structure for data loading
+                selectinload(models.CompletionsRequest.completion_response)
+                .selectinload(models.CompletionResponse.annotation_target)
+                .options(
+                    selectinload(models.AnnotationTarget.annotations),
+                    joinedload(models.AnnotationTarget.completion_response, innerjoin=False),
+                    joinedload(models.AnnotationTarget.completion_alternative, innerjoin=False)
+                ),
+                selectinload(models.CompletionsRequest.alternatives)
+                .selectinload(models.CompletionAlternative.annotation_target)
+                .options(
+                    selectinload(models.AnnotationTarget.annotations),
+                    joinedload(models.AnnotationTarget.completion_response, innerjoin=False),
+                    joinedload(models.AnnotationTarget.completion_alternative, innerjoin=False)
+                )
+            )
+            .order_by(
+                # This should now work because of the outerjoin above
+                models.CompletionResponse.created.desc().nullslast(),
+                models.CompletionsRequest.id.desc()
+            )
         )
+        # --- End Query ---
 
         result = await db.execute(stmt_requests)
+        # Keep unique() as joinedload might still cause duplicates
         requests = result.scalars().unique().all()
 
         if not requests:
@@ -272,13 +317,16 @@ async def get_requests_summary(
         for req in requests:
             req_id_str = str(req.id)
 
+            # --- Timestamp and Name/Question Logic (unchanged) ---
             timestamp_str = "N/A"
             if req.completion_response and req.completion_response.created:
-                try:
-                    ts_datetime = datetime.fromtimestamp(req.completion_response.created, tz=timezone.utc)
-                    timestamp_str = ts_datetime.isoformat().replace("+00:00", "Z")
-                except Exception as ts_exc:
-                    logger.warning(f"Could not parse timestamp {req.completion_response.created} for request {req_id_str}: {ts_exc}")
+                timestamp_str = format_timestamp(req.completion_response.created)
+            elif req.alternatives:
+                 try:
+                     earliest_alt_ts = min(alt.created_at for alt in req.alternatives if alt.created_at)
+                     timestamp_str = format_timestamp(earliest_alt_ts)
+                 except (ValueError, TypeError):
+                     pass # Keep N/A if no valid timestamps
 
             name = f"Request {req_id_str[:8]}..."
             question = "N/A"
@@ -292,13 +340,29 @@ async def get_requests_summary(
                 elif req.messages[-1].get("content"):
                     question = req.messages[-1].get("content")
                     name = (question[:50] + '...') if len(question) > 50 else question
+            # --- End Timestamp and Name/Question Logic ---
 
             total_responses = 0
-            if req.completion_response:
-                total_responses += 1
-            total_responses += len(req.alternatives or [])
-
             annotated_responses_count = 0
+            request_sft_status: RequestStatus = "none"
+
+            targets_to_check: List[models.AnnotationTarget] = []
+            if req.completion_response and req.completion_response.annotation_target:
+                targets_to_check.append(req.completion_response.annotation_target)
+            if req.alternatives:
+                for alt in req.alternatives:
+                    if alt.annotation_target:
+                        targets_to_check.append(alt.annotation_target)
+
+            total_responses = len(targets_to_check)
+
+            for target in targets_to_check:
+                if target.annotations:
+                    annotated_responses_count += 1
+                    # Call updated is_sft_example with target and schema
+                    if is_sft_example(target, active_schema=active_schema_content, threshold=sft_threshold):
+                        request_sft_status = "complete"
+                        break # Found one SFT example
 
             summary = MockRequestSummary(
                 id=req_id_str,
@@ -307,7 +371,7 @@ async def get_requests_summary(
                 totalResponses=total_responses,
                 annotatedResponses=annotated_responses_count,
                 timestamp=timestamp_str,
-                sftStatus="none",
+                sftStatus=request_sft_status,
                 dpoStatus="none",
             )
             summary_list.append(summary)
@@ -828,3 +892,282 @@ async def get_current_project_schema(
 
     logger.info(f"Found latest active schema {current_schema.id} created at {current_schema.created_at} for project {project_id}")
     return current_schema
+
+# Modify the is_sft_example function
+def is_sft_example(
+    target: models.AnnotationTarget,
+    active_schema: Optional[Dict[str, Any]] = None,
+    threshold: float = 0.75
+) -> bool:
+    """
+    Determines if an annotation target qualifies as an SFT example.
+    Checks average reward and, if an active schema is provided,
+    also validates JSON format and schema compliance.
+
+    Args:
+        target: The AnnotationTarget object, potentially with loaded relationships.
+        active_schema: The active JSON schema for the project, if any.
+        threshold: The minimum average reward to qualify as SFT (default: 0.75)
+
+    Returns:
+        bool: True if the target qualifies as an SFT example, False otherwise
+    """
+    # 1. Check Annotations and Reward Average (always required)
+    if not target.annotations:
+        return False # Must have annotations
+
+    total_reward = sum(annotation.reward for annotation in target.annotations if annotation.reward is not None)
+    # Ensure we don't divide by zero if annotations exist but all rewards are None (unlikely but safe)
+    num_annotations_with_reward = sum(1 for annotation in target.annotations if annotation.reward is not None)
+    if num_annotations_with_reward == 0:
+         return False # Cannot calculate average if no rewards are present
+
+    average_reward = total_reward / len(target.annotations) # Use total count for average as before
+
+    if average_reward < threshold:
+        logger.debug(f"SFT Check Failed for target {target.id}: Average reward {average_reward} < {threshold}")
+        return False # Failed reward threshold
+
+    # 2. Check JSON and Schema if active_schema is provided
+    if active_schema:
+        logger.debug(f"SFT Check for target {target.id}: Active schema provided. Performing JSON/Schema validation.")
+        content: Optional[str] = None
+        source_id_for_log: str = f"target {target.id}"
+
+        # Determine content source
+        if target.completion_response:
+            content = target.completion_response.choice_content
+            source_id_for_log = f"response {target.completion_response.id}"
+        elif target.completion_alternative:
+            content = target.completion_alternative.alternative_content
+            source_id_for_log = f"alternative {target.completion_alternative.id}"
+
+        if not content:
+            logger.debug(f"SFT Check Failed for {source_id_for_log}: No content found.")
+            return False # No content to validate
+
+        # Check if content is valid JSON
+        try:
+            parsed_content = json.loads(content)
+        except json.JSONDecodeError:
+            logger.debug(f"SFT Check Failed for {source_id_for_log}: Content is not valid JSON.")
+            return False # Not valid JSON
+
+        # Validate against schema
+        try:
+            validate_jsonschema(instance=parsed_content, schema=active_schema)
+            logger.debug(f"SFT Check Passed Schema Validation for {source_id_for_log}.")
+        except JsonSchemaValidationError:
+            logger.debug(f"SFT Check Failed for {source_id_for_log}: Content does not obey schema.")
+            return False # Does not obey schema
+        except Exception as e:
+            # Catch other potential validation errors
+            logger.warning(f"SFT Check encountered unexpected validation error for {source_id_for_log}: {e}")
+            return False # Treat unexpected validation errors as failure
+
+    # If all checks passed (reward threshold met, and schema checks passed if applicable)
+    logger.debug(f"SFT Check Passed for target {target.id} (Reward >= {threshold} and Schema checks passed if applicable)")
+    return True
+
+@router.get(
+    "/{project_id}/annotation-targets/{annotation_target_id}/is-sft",
+    response_model=bool,
+    summary="Check if an annotation target qualifies as an SFT example."
+)
+async def check_if_sft_example(
+    project_id: uuid.UUID = Path(..., description="The UUID of the project"),
+    annotation_target_id: uuid.UUID = Path(..., description="The UUID of the annotation target to check"),
+    threshold: float = Query(0.75, description="The minimum average reward threshold for SFT."),
+    db: AsyncSession = Depends(get_db),
+    membership: models.ProjectMembership = Depends(verify_project_membership),
+):
+    """
+    Determines if an annotation target qualifies as an SFT example based on its annotations
+    and schema compliance if an active schema exists.
+    """
+    logger.info(f"Checking if annotation target {annotation_target_id} is an SFT example (project: {project_id})")
+
+    try:
+        # --- Fetch Active Schema ---
+        active_schema_content: Optional[Dict[str, Any]] = None
+        try:
+            stmt_schema = (
+                select(models.ProjectJsonSchema)
+                .where(models.ProjectJsonSchema.project_id == project_id)
+                .where(models.ProjectJsonSchema.is_active == True)
+                .order_by(models.ProjectJsonSchema.created_at.desc())
+            )
+            result_schema = await db.execute(stmt_schema)
+            active_schema_obj = result_schema.scalars().first()
+            if active_schema_obj:
+                active_schema_content = active_schema_obj.schema_content
+                logger.debug(f"Found active schema {active_schema_obj.id} for SFT check.")
+            else:
+                logger.debug(f"No active schema found for project {project_id}. SFT check will only use reward.")
+        except Exception as schema_exc:
+            logger.error(f"Error fetching active schema during SFT check for project {project_id}: {schema_exc}", exc_info=True)
+            # Continue without schema validation if fetching fails
+        # --- End Fetch Active Schema ---
+
+        # Get the annotation target with relationships needed for is_sft_example
+        stmt = (
+            select(models.AnnotationTarget)
+            .options(
+                selectinload(models.AnnotationTarget.annotations),
+                selectinload(models.AnnotationTarget.completion_response),
+                selectinload(models.AnnotationTarget.completion_alternative)
+            )
+            .where(models.AnnotationTarget.id == annotation_target_id)
+        )
+        result = await db.execute(stmt)
+        target = result.scalars().first()
+
+        if not target:
+            logger.warning(f"Annotation target {annotation_target_id} not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Annotation target not found."
+            )
+
+        # --- Project Verification ---
+        belongs_to_project = False
+        stmt_check_response = (
+            select(models.CompletionResponse.id)
+            .join(models.CompletionsRequest, models.CompletionResponse.completion_request_id == models.CompletionsRequest.id)
+            .where(models.CompletionResponse.annotation_target_id == annotation_target_id)
+            .where(models.CompletionsRequest.project_id == project_id)
+            .limit(1)
+        )
+        result_resp = await db.execute(stmt_check_response)
+        if result_resp.scalar_one_or_none() is not None:
+            belongs_to_project = True
+
+        if not belongs_to_project:
+            stmt_check_alt = (
+                select(models.CompletionAlternative.id)
+                .where(models.CompletionAlternative.annotation_target_id == annotation_target_id)
+                .where(models.CompletionAlternative.project_id == project_id)
+                .limit(1)
+            )
+            result_alt = await db.execute(stmt_check_alt)
+            if result_alt.scalar_one_or_none() is not None:
+                belongs_to_project = True
+
+        if not belongs_to_project:
+            logger.warning(f"Annotation target {annotation_target_id} not found in project {project_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Annotation target not found in this project."
+            )
+        # --- End Project Verification ---
+
+        # Determine if this is an SFT example using the updated function
+        is_sft = is_sft_example(target, active_schema=active_schema_content, threshold=threshold)
+        logger.info(f"Annotation target {annotation_target_id}: is_sft={is_sft} (threshold={threshold}, schema_checked={active_schema_content is not None})")
+
+        return is_sft
+
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        logger.exception(f"Error checking if annotation target {annotation_target_id} is an SFT example: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to determine SFT status due to an internal error."
+        )
+
+@router.get(
+    "/{project_id}/sft-request-count",
+    response_model=SftRequestCountResponse,
+    summary="Get the count of requests ready for SFT."
+)
+async def get_sft_request_count(
+    project_id: uuid.UUID = Path(..., description="The UUID of the project"),
+    db: AsyncSession = Depends(get_db),
+    membership: models.ProjectMembership = Depends(verify_project_membership),
+    sft_threshold: float = 0.75
+):
+    """
+    Calculates and returns the number of unique CompletionsRequests
+    within the project that have at least one associated AnnotationTarget
+    meeting the SFT criteria (reward threshold and schema compliance if applicable).
+    """
+    logger.info(f"Calculating SFT request count for project {project_id} for user {membership.user_id}")
+
+    try:
+        # --- Fetch Active Schema Once ---
+        active_schema_content: Optional[Dict[str, Any]] = None
+        try:
+            # (Same schema fetching logic as in get_requests_summary)
+            stmt_schema = (
+                select(models.ProjectJsonSchema)
+                .where(models.ProjectJsonSchema.project_id == project_id)
+                .where(models.ProjectJsonSchema.is_active == True)
+                .order_by(models.ProjectJsonSchema.created_at.desc())
+            )
+            result_schema = await db.execute(stmt_schema)
+            active_schema_obj = result_schema.scalars().first()
+            if active_schema_obj:
+                active_schema_content = active_schema_obj.schema_content
+                logger.debug(f"Found active schema {active_schema_obj.id} for SFT count.")
+            else:
+                logger.debug(f"No active schema found for project {project_id}. SFT count will only use reward.")
+        except Exception as schema_exc:
+            logger.error(f"Error fetching active schema for SFT count (project {project_id}): {schema_exc}", exc_info=True)
+        # --- End Fetch Active Schema ---
+
+        # --- Query to fetch requests and necessary related data for SFT check ---
+        # This query needs to be efficient for counting, loading only what's needed by is_sft_example
+        stmt_requests = (
+            select(models.CompletionsRequest)
+            .where(models.CompletionsRequest.project_id == project_id)
+            .options(
+                # Load relationships needed by is_sft_example, using joinedload for efficiency
+                selectinload(models.CompletionsRequest.completion_response)
+                .selectinload(models.CompletionResponse.annotation_target)
+                .options(
+                    selectinload(models.AnnotationTarget.annotations),
+                    joinedload(models.AnnotationTarget.completion_response, innerjoin=False),
+                    joinedload(models.AnnotationTarget.completion_alternative, innerjoin=False)
+                ),
+                selectinload(models.CompletionsRequest.alternatives)
+                .selectinload(models.CompletionAlternative.annotation_target)
+                .options(
+                    selectinload(models.AnnotationTarget.annotations),
+                    joinedload(models.AnnotationTarget.completion_response, innerjoin=False),
+                    joinedload(models.AnnotationTarget.completion_alternative, innerjoin=False)
+                )
+            )
+            # No ordering needed for just counting
+        )
+        # --- End Query ---
+
+        result = await db.execute(stmt_requests)
+        # Use unique() because joinedload can cause duplicate parent objects
+        requests = result.scalars().unique().all()
+
+        sft_ready_request_count = 0
+        for req in requests:
+            targets_to_check: List[models.AnnotationTarget] = []
+            if req.completion_response and req.completion_response.annotation_target:
+                targets_to_check.append(req.completion_response.annotation_target)
+            if req.alternatives:
+                for alt in req.alternatives:
+                    if alt.annotation_target:
+                        targets_to_check.append(alt.annotation_target)
+
+            for target in targets_to_check:
+                # Call is_sft_example with target and schema
+                if is_sft_example(target, active_schema=active_schema_content, threshold=sft_threshold):
+                    sft_ready_request_count += 1
+                    break # Found one SFT example for this request, move to the next request
+
+        logger.info(f"Found {sft_ready_request_count} SFT-ready requests for project {project_id}")
+        return SftRequestCountResponse(sft_request_count=sft_ready_request_count)
+
+    except Exception as e:
+        logger.exception(f"Error calculating SFT request count for project {project_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to calculate SFT request count due to an internal error."
+        )

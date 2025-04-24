@@ -1,9 +1,9 @@
 "use client"
 
-import { useState, useEffect } from "react" // Added useEffect
+import { useState, useEffect, useCallback } from "react" // Added useCallback
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { Download, ChevronUp, ChevronDown, AlertTriangle } from "lucide-react" // Removed unused Info
+import { Download, ChevronUp, ChevronDown, AlertTriangle, RefreshCw } from "lucide-react" // Added RefreshCw
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { AnnotationProgressBar } from "@/components/annotation-progress-bar"
 
@@ -11,32 +11,87 @@ interface DownloadDatasetComponentProps {
   className?: string
   title?: string
   description?: string
-  sftAnnotatedResponses?: number
-  dpoAnnotatedResponses?: number
+  dpoAnnotatedResponses?: number // Keep DPO mocked for now
   requiredResponses?: number
-  projectId: string // <-- MAKE SURE THIS LINE IS PRESENT
+  projectId: string
 }
 
 export function DownloadDatasetComponent({
   className = "",
   title = "Download Datasets",
   description = "Once you have annotated responses with rewards, you can download JSONL files for fine-tuning.",
-  sftAnnotatedResponses: initialSftAnnotatedResponses = 5,
-  dpoAnnotatedResponses: initialDpoAnnotatedResponses = 3,
-  requiredResponses = 20,
-  projectId // <-- MAKE SURE THIS IS PRESENT
+  dpoAnnotatedResponses: initialDpoAnnotatedResponses = 3, // Keep DPO mocked
+  requiredResponses = 2,
+  projectId
 }: DownloadDatasetComponentProps) {
   const [collapsed, setCollapsed] = useState(false)
   const [isDownloadingSft, setIsDownloadingSft] = useState(false)
   const [isDownloadingDpo, setIsDownloadingDpo] = useState(false)
+
+  // SFT State
+  const [sftRequestCount, setSftRequestCount] = useState(0)
   const [isRefreshingSft, setIsRefreshingSft] = useState(false)
+  const [sftError, setSftError] = useState<string | null>(null)
+
+  // DPO State (still mocked)
   const [isRefreshingDpo, setIsRefreshingDpo] = useState(false)
-  const [sftAnnotatedResponses, setSftAnnotatedResponses] = useState(initialSftAnnotatedResponses)
   const [dpoAnnotatedResponses, setDpoAnnotatedResponses] = useState(initialDpoAnnotatedResponses)
 
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ""
+  const GUEST_USER_ID_HEADER = "X-Guest-User-Id"
+
+  // Function to fetch SFT count - Keep useCallback
+  const fetchSftCount = useCallback(async () => {
+    // Log inside useCallback to see if it's being created/called
+    console.log(`DownloadDatasetComponent: fetchSftCount called. projectId: ${projectId}`);
+
+    if (!projectId) {
+      console.log("DownloadDatasetComponent: fetchSftCount aborted - no projectId.");
+      return;
+    }
+
+    setIsRefreshingSft(true);
+    setSftError(null);
+    console.log(`DownloadDatasetComponent: Fetching SFT count for project ${projectId}`);
+
+    const guestUserId = localStorage.getItem('guestUserId');
+    const headers: HeadersInit = {};
+    if (guestUserId) {
+      headers[GUEST_USER_ID_HEADER] = guestUserId;
+    }
+    const url = `${API_BASE_URL}/mock-next/${projectId}/sft-request-count`;
+
+    try {
+      const response = await fetch(url, { headers });
+      if (!response.ok) {
+        let errorDetail = `Failed to fetch SFT count: ${response.status}`;
+        try { const errorData = await response.json(); errorDetail += ` - ${errorData.detail || 'Unknown error'}`; } catch { }
+        throw new Error(errorDetail);
+      }
+      const data = await response.json();
+      setSftRequestCount(data.sft_request_count);
+      console.log(`DownloadDatasetComponent: SFT count fetched: ${data.sft_request_count}`);
+    } catch (err: any) {
+      console.error("DownloadDatasetComponent: Error fetching SFT count:", err);
+      setSftError(err.message || "Failed to load SFT count.");
+      setSftRequestCount(0); // Reset count on error
+    } finally {
+      setIsRefreshingSft(false);
+    }
+  }, [projectId, API_BASE_URL, GUEST_USER_ID_HEADER]);
+
+  // Fetch count on initial load and when projectId changes
   useEffect(() => {
-    console.log("DownloadDatasetComponent received projectId:", projectId)
-  }, [projectId])
+    // Log inside useEffect to see if it runs and the projectId value at that time
+    console.log(`DownloadDatasetComponent: useEffect triggered. projectId: ${projectId}`);
+    // Only call fetch if projectId is truthy
+    if (projectId) {
+        fetchSftCount();
+    } else {
+        console.log("DownloadDatasetComponent: useEffect skipped fetch - no projectId yet.");
+    }
+  // *** Simplify dependency array to ONLY projectId ***
+  }, [projectId]); // <--- CHANGE HERE
 
   const toggleCollapse = () => {
     setCollapsed(!collapsed)
@@ -60,30 +115,23 @@ export function DownloadDatasetComponent({
     }, 1500)
   }
 
+  // Refresh SFT calls the fetch function
   const handleRefreshSft = () => {
-    setIsRefreshingSft(true)
-    // Simulate fetching updated annotation count
-    setTimeout(() => {
-      // Simulate getting new data - in a real app this would be an API call
-      const increase = Math.floor(Math.random() * 4)
-      setSftAnnotatedResponses((prev) => Math.min(requiredResponses, prev + increase))
-      setIsRefreshingSft(false)
-    }, 1000)
+    fetchSftCount();
   }
 
+  // Keep DPO refresh mocked for now
   const handleRefreshDpo = () => {
     setIsRefreshingDpo(true)
-    // Simulate fetching updated annotation count
     setTimeout(() => {
-      // Simulate getting new data - in a real app this would be an API call
       const increase = Math.floor(Math.random() * 4)
       setDpoAnnotatedResponses((prev) => Math.min(requiredResponses, prev + increase))
       setIsRefreshingDpo(false)
     }, 1000)
   }
 
-  const isSftReady = sftAnnotatedResponses >= requiredResponses
-  const isDpoReady = dpoAnnotatedResponses >= requiredResponses
+  const isSftReady = sftRequestCount >= requiredResponses
+  const isDpoReady = dpoAnnotatedResponses >= requiredResponses // DPO still uses mocked value
   const isAnyDatasetNotReady = !isSftReady || !isDpoReady
 
   return (
@@ -108,32 +156,28 @@ export function DownloadDatasetComponent({
         <>
           <CardContent>
             <div className="space-y-4">
+              {sftError && (
+                 <Alert variant="destructive">
+                   <AlertTriangle className="h-4 w-4" />
+                   <AlertTitle>Error Loading SFT Count</AlertTitle>
+                   <AlertDescription>{sftError}</AlertDescription>
+                 </Alert>
+              )}
               <AnnotationProgressBar
                 title="SFT Annotation Progress"
-                annotatedResponses={sftAnnotatedResponses}
+                annotatedResponses={sftRequestCount} // Use fetched count
                 requiredResponses={requiredResponses}
-                onRefresh={handleRefreshSft}
-                isRefreshing={isRefreshingSft}
+                onRefresh={handleRefreshSft} // Use updated handler
+                isRefreshing={isRefreshingSft} // Use SFT specific loading state
               />
 
               <AnnotationProgressBar
                 title="DPO Annotation Progress"
-                annotatedResponses={dpoAnnotatedResponses}
+                annotatedResponses={dpoAnnotatedResponses} // Keep mocked DPO
                 requiredResponses={requiredResponses}
                 onRefresh={handleRefreshDpo}
                 isRefreshing={isRefreshingDpo}
               />
-
-              {isAnyDatasetNotReady && (
-                <Alert className="bg-amber-50 text-amber-800 border-amber-200">
-                  <AlertTriangle className="h-4 w-4" />
-                  <AlertTitle>Warning</AlertTitle>
-                  <AlertDescription>
-                    Please annotate more responses to reach the minimum requirement of {requiredResponses} annotated
-                    responses for each dataset type.
-                  </AlertDescription>
-                </Alert>
-              )}
 
               <div className="p-3 bg-gray-50 rounded-md">
                 <p className="font-medium">Dataset Format</p>
@@ -145,9 +189,9 @@ export function DownloadDatasetComponent({
             </div>
           </CardContent>
           <CardFooter className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
-            <Button className="gap-2 flex-1" onClick={handleDownloadSft} disabled={isDownloadingSft || !isSftReady}>
-              <Download className="h-4 w-4" />
-              {isDownloadingSft ? "Downloading..." : "Download SFT JSONL Dataset"}
+            <Button className="gap-2 flex-1" onClick={handleDownloadSft} disabled={isDownloadingSft || !isSftReady || isRefreshingSft}>
+              {isRefreshingSft ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {isDownloadingSft ? "Downloading..." : isRefreshingSft ? "Refreshing..." : "Download SFT JSONL Dataset"}
             </Button>
             <Button className="gap-2 flex-1" onClick={handleDownloadDpo} disabled={isDownloadingDpo || !isDpoReady}>
               <Download className="h-4 w-4" />

@@ -2,6 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import { ResponseCard } from "@/components/response-card";
+import { RJSFSchema } from "@rjsf/utils"; // <-- Import type
 
 // Define/Import Response and Annotation types
 type Annotation = { id: string; reward: number; by: string; at: string; };
@@ -24,7 +25,8 @@ type AlternativesSectionProps = {
   projectId: string;
   onAnnotationAdded: (targetId: string, newAnnotationData: any) => void;
   onResponseDeleted: (targetId: string) => void;
-  onAnnotationDeleted: (targetId: string, annotationId: string) => void; // <-- Add prop type
+  onAnnotationDeleted: (targetId: string, annotationId: string) => void;
+  activeSchema: RJSFSchema | null; // <-- Add prop
 };
 
 export function AlternativesSection({
@@ -34,7 +36,8 @@ export function AlternativesSection({
   projectId,
   onAnnotationAdded,
   onResponseDeleted,
-  onAnnotationDeleted, // <-- Accept prop
+  onAnnotationDeleted,
+  activeSchema, // <-- Destructure prop
 }: AlternativesSectionProps) {
   return (
     <>
@@ -55,7 +58,8 @@ export function AlternativesSection({
               projectId={projectId}
               onAnnotationAdded={onAnnotationAdded}
               onResponseDeleted={onResponseDeleted}
-              onAnnotationDeleted={onAnnotationDeleted} // <-- Pass down
+              onAnnotationDeleted={onAnnotationDeleted}
+              activeSchema={activeSchema} // <-- Pass down
             />
           ))}
         </div>

@@ -1,4 +1,5 @@
 import { ResponseCard } from "@/components/response-card";
+import { RJSFSchema } from "@rjsf/utils";
 
 type Annotation = { id: string; reward: number; by: string; at: string; };
 type Response = {
@@ -17,17 +18,19 @@ interface ResponseSectionProps {
   response: Response;
   projectId: string;
   onAnnotationAdded: (targetId: string, newAnnotationData: any) => void;
-  onResponseDeleted?: (targetId: string) => void; // <-- Make optional with '?'
+  onResponseDeleted?: (targetId: string) => void;
   onAnnotationDeleted: (targetId: string, annotationId: string) => void;
+  activeSchema: RJSFSchema | null;
 }
 
-export function ResponseSection({ response, projectId, onAnnotationAdded, onResponseDeleted, onAnnotationDeleted }: ResponseSectionProps) {
+export function ResponseSection({ response, projectId, onAnnotationAdded, onResponseDeleted, onAnnotationDeleted, activeSchema }: ResponseSectionProps) {
   return <ResponseCard
             response={response}
             projectId={projectId}
             onAnnotationAdded={onAnnotationAdded}
-            onResponseDeleted={onResponseDeleted} // Pass it (will be undefined if not provided)
+            onResponseDeleted={onResponseDeleted}
             onAnnotationDeleted={onAnnotationDeleted}
-            isAlternative={false} // Explicitly mark as not an alternative
+            activeSchema={activeSchema}
+            isAlternative={false}
          />;
 }

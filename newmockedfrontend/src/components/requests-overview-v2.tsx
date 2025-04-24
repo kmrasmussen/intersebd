@@ -1,15 +1,16 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table"
 import { Badge } from "./ui/badge"
-import { ChevronDown, ChevronRight, ArrowRight } from "lucide-react"
+import { ChevronDown, ChevronRight, ArrowRight, RefreshCw } from "lucide-react"
 import { RequestCard } from "./request-details/request-card"
 import { ResponseSection } from "./request-details/response-section"
 import { AlternativesSection } from "./request-details/alternatives-section"
 import { NewAlternativeForm } from "./request-details/new-alternative-form"
 import { Link } from "react-router-dom"
 import { InfoModal } from "./info-modal"
+import { RJSFSchema } from "@rjsf/utils"
 
 // --- Define Types ---
 type RequestStatus = "complete" | "partial" | "none";
@@ -27,7 +28,7 @@ interface MockRequest {
 
 interface Message { role: string; content: string; }
 interface Annotation {
-  id: string; // <-- ADD ID
+  id: string;
   reward: number;
   by: string;
   at: string;
@@ -60,7 +61,7 @@ interface MockRequestDetail {
   name: string;
   pairNumber: number;
   request: RequestDetailData;
-  mainResponse: ResponseDetail;
+  mainResponse?: ResponseDetail;
   alternativeResponses: ResponseDetail[];
 }
 // --- End Define Types ---
@@ -102,165 +103,189 @@ export function RequestsOverviewV2({ projectId }: { projectId: string }) {
   const [detailsError, setDetailsError] = useState<string | null>(null)
 
   const [showAlternatives, setShowAlternatives] = useState(true)
+  const [activeSchema, setActiveSchema] = useState<RJSFSchema | null>(null)
+  const [isLoadingSchema, setIsLoadingSchema] = useState(false)
 
-  const handleAnnotationAdded = (targetId: string, newAnnotationData: any) => {
-    console.log("handleAnnotationAdded called in Overview:", targetId, newAnnotationData);
-    setCurrentDetails(prevDetails => {
-      if (!prevDetails) return null;
+  console.log(isLoadingSchema, "isLoadingSchema")
 
-      const newAnnotation: Annotation = {
-        id: newAnnotationData.id, // <-- Ensure ID is added
-        reward: newAnnotationData.reward,
-        by: newAnnotationData.user_id ? String(newAnnotationData.user_id) : "Unknown",
-        at: new Date(newAnnotationData.timestamp).toISOString()
-      };
-
-      const updatedDetails = JSON.parse(JSON.stringify(prevDetails));
-
-      if (updatedDetails.mainResponse?.annotation_target_id === targetId) {
-        updatedDetails.mainResponse.annotations.push(newAnnotation);
-        console.log("Updated main response annotations");
-      } else {
-        const altIndex = updatedDetails.alternativeResponses.findIndex(
-          (alt: ResponseDetail) => alt.annotation_target_id === targetId
-        );
-        if (altIndex !== -1) {
-          updatedDetails.alternativeResponses[altIndex].annotations.push(newAnnotation);
-          console.log(`Updated alternative response annotations at index ${altIndex}`);
-        } else {
-          console.warn("Could not find matching response/alternative for targetId:", targetId);
-        }
-      }
-      return updatedDetails;
-    });
-  };
-
-  const handleResponseDeleted = (deletedTargetId: string) => {
-    console.log("handleResponseDeleted called in Overview with targetId:", deletedTargetId);
-    setCurrentDetails(prevDetails => {
-      if (!prevDetails) return null;
-
-      const updatedDetails = JSON.parse(JSON.stringify(prevDetails));
-
-      updatedDetails.alternativeResponses = updatedDetails.alternativeResponses.filter(
-        (alt: ResponseDetail) => alt.annotation_target_id !== deletedTargetId
-      );
-
-      console.log("Filtered alternatives:", updatedDetails.alternativeResponses);
-      return updatedDetails;
-    });
-  };
-
-  const handleAnnotationDeleted = (targetId: string, annotationId: string) => {
-    console.log("handleAnnotationDeleted called in Overview:", targetId, annotationId);
-    setCurrentDetails(prevDetails => {
-      if (!prevDetails) return null;
-
-      const updatedDetails = JSON.parse(JSON.stringify(prevDetails));
-
-      const updateAnnotations = (response: ResponseDetail | null) => {
-        if (response?.annotation_target_id === targetId) {
-          const initialLength = response.annotations.length;
-          response.annotations = response.annotations.filter(
-            (ann: Annotation) => ann.id !== annotationId
-          );
-          if (response.annotations.length < initialLength) {
-            console.log(`Removed annotation ${annotationId} from target ${targetId}`);
-          } else {
-            console.warn(`Could not find annotation ${annotationId} to remove from target ${targetId}`);
-          }
-        }
-        return response;
-      };
-
-      updatedDetails.mainResponse = updateAnnotations(updatedDetails.mainResponse);
-
-      updatedDetails.alternativeResponses = updatedDetails.alternativeResponses.map(updateAnnotations);
-
-      return updatedDetails;
-    });
-  };
-
-  const handleAlternativeAdded = (newAlternative: ResponseDetail) => {
-    console.log("handleAlternativeAdded called in Overview:", newAlternative);
-    setCurrentDetails(prevDetails => {
-      if (!prevDetails) return null;
-
-      const updatedDetails = JSON.parse(JSON.stringify(prevDetails));
-
-      updatedDetails.alternativeResponses.push(newAlternative);
-
-      console.log("Added new alternative:", newAlternative.id);
-      return updatedDetails;
-    });
-    setShowAlternatives(true);
-  };
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ""
+  const GUEST_USER_ID_HEADER = "X-Guest-User-Id"
 
   useEffect(() => {
     const fetchRequests = async () => {
-      setIsLoading(true)
-      setError(null)
-      try {
-        const baseUrl = import.meta.env.VITE_API_BASE_URL;
-        const apiUrl = `${baseUrl}/mock-next/${projectId}/requests-summary`
-        console.log("Fetching from:", apiUrl)
-
-        const response = await fetch(apiUrl, {
-          credentials: 'include'
-        })
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`)
-        }
-        const data: MockRequest[] = await response.json()
-        console.log("data from overview", data)
-        setRequests(data)
-      } catch (e: any) {
-        console.error("Failed to fetch requests:", e)
-        setError(e.message || "Failed to fetch data")
-      } finally {
-        setIsLoading(false)
+      if (!projectId) {
+        setError("Project ID is missing.");
+        setIsLoading(false);
+        return;
       }
+      setIsLoading(true);
+      setError(null);
+      setRequests([]);
+
+      const guestUserId = localStorage.getItem('guestUserId');
+      const headers: HeadersInit = {};
+      if (guestUserId) {
+        headers[GUEST_USER_ID_HEADER] = guestUserId;
+      }
+      const url = `${API_BASE_URL}/mock-next/${projectId}/requests-summary`;
+
+      try {
+        const response = await fetch(url, { headers });
+        if (!response.ok) {
+          let errorDetail = `Failed to fetch requests: ${response.status}`;
+          try { const errorData = await response.json(); errorDetail += ` - ${errorData.detail || 'Unknown error'}`; } catch { }
+          throw new Error(errorDetail);
+        }
+        const data: MockRequest[] = await response.json();
+        setRequests(data);
+      } catch (err: any) {
+        setError(err.message || "An unknown error occurred while fetching requests.");
+        setRequests([]);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchRequests();
+  }, [projectId, API_BASE_URL, GUEST_USER_ID_HEADER]);
+
+  const fetchRequestDetailsAndSchema = useCallback(async (reqId: string) => {
+    if (!projectId) return
+
+    console.log(`Fetching details for request ${reqId} and active schema for project ${projectId}`)
+    setIsLoadingDetails(true)
+    setIsLoadingSchema(true)
+    setDetailsError(null)
+    setCurrentDetails(null)
+    setActiveSchema(null)
+
+    const guestUserId = localStorage.getItem('guestUserId')
+    const headers: HeadersInit = {}
+    if (guestUserId) {
+      headers[GUEST_USER_ID_HEADER] = guestUserId
     }
 
-    if (projectId) {
-      fetchRequests()
+    const detailsUrl = `${API_BASE_URL}/mock-next/${projectId}/requests/${reqId}`
+    const schemaUrl = `${API_BASE_URL}/mock-next/${projectId}/schemas/current`
+
+    try {
+      const [detailsResponse, schemaResponse] = await Promise.all([
+        fetch(detailsUrl, { headers }),
+        fetch(schemaUrl, { headers })
+      ])
+
+      if (!detailsResponse.ok) {
+        let errorDetail = `Details fetch failed: ${detailsResponse.status}`
+        try { const errorData = await detailsResponse.json(); errorDetail += ` - ${errorData.detail || 'Unknown error'}`; } catch { }
+        throw new Error(errorDetail)
+      }
+      const detailsData: MockRequestDetail = await detailsResponse.json()
+      setCurrentDetails(detailsData)
+      console.log("Details fetched successfully:", detailsData)
+
+      if (schemaResponse.ok) {
+        const schemaData = await schemaResponse.json()
+        if (schemaData && schemaData.schema_content) {
+          setActiveSchema(schemaData.schema_content as RJSFSchema)
+          console.log("Active schema fetched successfully:", schemaData.schema_content)
+        } else {
+          console.log("Schema endpoint returned OK, but no schema_content found.")
+          setActiveSchema(null)
+        }
+      } else if (schemaResponse.status === 404) {
+        console.log("No active schema found for project (404).")
+        setActiveSchema(null)
+      } else {
+        console.error(`Schema fetch failed: ${schemaResponse.status}`)
+        setActiveSchema(null)
+      }
+
+    } catch (error: any) {
+      console.error("Failed to fetch request details or schema:", error)
+      setDetailsError(error.message || "Failed to load details or schema")
+      setCurrentDetails(null)
+      setActiveSchema(null)
+    } finally {
+      setIsLoadingDetails(false)
+      setIsLoadingSchema(false)
     }
-  }, [projectId])
+  }, [projectId, API_BASE_URL, GUEST_USER_ID_HEADER])
 
   useEffect(() => {
-    const fetchRequestDetails = async (id: string) => {
-      setIsLoadingDetails(true)
-      setDetailsError(null)
-      setCurrentDetails(null)
-      try {
-        const baseUrl = import.meta.env.VITE_API_BASE_URL;
-        const apiUrl = `${baseUrl}/mock-next/${projectId}/requests/${id}`
-        console.log("Fetching details from:", apiUrl)
-        const response = await fetch(apiUrl, {
-          credentials: 'include'
-        })
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`)
-        }
-        const data: MockRequestDetail = await response.json()
-        console.log("data", data)
-        console.log('data for a specific request', data)
-        setCurrentDetails(data)
-      } catch (e: any) {
-        console.error("Failed to fetch request details:", e)
-        setDetailsError(e.message || "Failed to fetch details")
-      } finally {
-        setIsLoadingDetails(false)
-      }
-    }
-
     if (expandedRequestId) {
-      fetchRequestDetails(expandedRequestId)
+      fetchRequestDetailsAndSchema(expandedRequestId)
+    } else {
+      setCurrentDetails(null)
+      setActiveSchema(null)
     }
-  }, [expandedRequestId, projectId])
+  }, [expandedRequestId, fetchRequestDetailsAndSchema])
 
   const toggleRequestExpansion = (id: string) => {
     setExpandedRequestId(expandedRequestId === id ? null : id)
+  }
+
+  const handleAnnotationAdded = (targetId: string, newAnnotationData: any) => {
+    console.log("requests-overview-v2: handleAnnotationAdded", targetId, newAnnotationData)
+    setCurrentDetails(prevDetails => {
+      if (!prevDetails) return null
+      const updateAnnotations = (response: ResponseDetail | undefined): ResponseDetail | undefined => {
+        if (!response || response.annotation_target_id !== targetId) return response
+        return {
+          ...response,
+          annotations: [...response.annotations, newAnnotationData]
+        }
+      }
+      return {
+        ...prevDetails,
+        mainResponse: updateAnnotations(prevDetails.mainResponse) as ResponseDetail,
+        alternativeResponses: prevDetails.alternativeResponses.map(alt => updateAnnotations(alt) || alt)
+      }
+    })
+  }
+
+  const handleAnnotationDeleted = (targetId: string, annotationId: string) => {
+    console.log("requests-overview-v2: handleAnnotationDeleted", targetId, annotationId)
+    setCurrentDetails(prevDetails => {
+      if (!prevDetails) return null
+      const updateAnnotations = (response: ResponseDetail | undefined): ResponseDetail | undefined => {
+        if (!response || response.annotation_target_id !== targetId) return response
+        return {
+          ...response,
+          annotations: response.annotations.filter(ann => ann.id !== annotationId)
+        }
+      }
+      return {
+        ...prevDetails,
+        mainResponse: updateAnnotations(prevDetails.mainResponse) as ResponseDetail,
+        alternativeResponses: prevDetails.alternativeResponses.map(alt => updateAnnotations(alt) || alt)
+      }
+    })
+  }
+
+  const handleResponseDeleted = (targetId: string) => {
+    console.log("requests-overview-v2: handleResponseDeleted", targetId)
+    setCurrentDetails(prevDetails => {
+      if (!prevDetails) return null
+      if (prevDetails.mainResponse?.annotation_target_id === targetId) {
+        console.warn("Main response deleted - UI update needed.")
+        return { ...prevDetails, mainResponse: undefined }
+      }
+      return {
+        ...prevDetails,
+        alternativeResponses: prevDetails.alternativeResponses.filter(alt => alt.annotation_target_id !== targetId)
+      }
+    })
+  }
+
+  const handleAlternativeAdded = (newAlternative: ResponseDetail) => {
+    console.log("requests-overview-v2: handleAlternativeAdded", newAlternative)
+    setCurrentDetails(prevDetails => {
+      if (!prevDetails) return null
+      return {
+        ...prevDetails,
+        alternativeResponses: [...prevDetails.alternativeResponses, newAlternative]
+      }
+    })
   }
 
   if (isLoading) {
@@ -351,7 +376,7 @@ export function RequestsOverviewV2({ projectId }: { projectId: string }) {
                   <TableCell colSpan={9} className="p-0 border-t-0">
                     <div className="p-6 bg-gray-50">
                       {isLoadingDetails ? (
-                        <div>Loading details...</div>
+                        <div className="text-center p-4"><RefreshCw className="h-6 w-6 animate-spin inline-block" /> Loading details...</div>
                       ) : detailsError ? (
                         <div className="text-red-600">Error loading details: {detailsError}</div>
                       ) : currentDetails ? (
@@ -363,12 +388,20 @@ export function RequestsOverviewV2({ projectId }: { projectId: string }) {
 
                           <div className="mb-6">
                             <h3 className="font-medium mb-2">Response:</h3>
-                            <ResponseSection
-                              response={currentDetails.mainResponse}
-                              projectId={projectId}
-                              onAnnotationAdded={handleAnnotationAdded}
-                              onAnnotationDeleted={handleAnnotationDeleted}
-                            />
+                            {currentDetails.mainResponse ? (
+                              <ResponseSection
+                                response={currentDetails.mainResponse}
+                                projectId={projectId}
+                                onAnnotationAdded={handleAnnotationAdded}
+                                onResponseDeleted={handleResponseDeleted}
+                                onAnnotationDeleted={handleAnnotationDeleted}
+                                activeSchema={activeSchema}
+                              />
+                            ) : (
+                              <div className="p-4 bg-yellow-50 rounded-md text-yellow-700 italic text-center">
+                                Main response is missing or was deleted.
+                              </div>
+                            )}
                           </div>
 
                           <div className="mb-6">
@@ -380,6 +413,7 @@ export function RequestsOverviewV2({ projectId }: { projectId: string }) {
                               onAnnotationAdded={handleAnnotationAdded}
                               onResponseDeleted={handleResponseDeleted}
                               onAnnotationDeleted={handleAnnotationDeleted}
+                              activeSchema={activeSchema}
                             />
                           </div>
 

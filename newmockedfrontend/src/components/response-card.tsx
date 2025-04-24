@@ -1,13 +1,21 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect } from "react"
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Check, RefreshCw, X, ThumbsUp, ThumbsDown, Trash2, Copy, CheckCircle2, XCircle, AlertCircle } from "lucide-react"
+import { Label } from "@/components/ui/label"
+import { Check, RefreshCw, X, ThumbsUp, ThumbsDown, Trash2, Copy, CheckCircle2, XCircle, AlertCircle, FileJson, FileText } from "lucide-react"
+import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
+import { Checkbox } from "@/components/ui/checkbox"
+
+import Form from '@rjsf/core';
+import { RJSFSchema, RJSFValidationError, UiSchema, FieldTemplateProps, WidgetProps, BaseInputTemplateProps } from '@rjsf/utils';
+import validator from '@rjsf/validator-ajv8';
 
 type Annotation = {
-  id: string // <-- ADD ID FIELD
+  id: string
   reward: number
   by: string
   at: string
@@ -39,36 +47,41 @@ type Response = {
   obeys_schema: boolean | null
 }
 
-// Function to format JSON with syntax highlighting
+interface ResponseCardProps {
+  response: Response
+  isAlternative?: boolean
+  projectId: string
+  onAnnotationAdded?: (targetId: string, newAnnotationData: any) => void
+  onResponseDeleted?: (targetId: string) => void
+  onAnnotationDeleted?: (targetId: string, annotationId: string) => void
+  activeSchema: RJSFSchema | null
+}
+
 function JsonFormatter({ jsonString }: { jsonString: string }) {
   const [copied, setCopied] = useState(false)
 
-  // Try to parse the JSON to format it properly
   const formattedJson = useMemo(() => {
     try {
       const parsed = JSON.parse(jsonString)
       return JSON.stringify(parsed, null, 2)
     } catch (e) {
-      // If parsing fails, return the original string
       return jsonString
     }
   }, [jsonString])
 
-  // Function to add syntax highlighting
   const highlightJson = (json: string) => {
-    // Replace with regex to add spans with appropriate classes
     return json.replace(
       /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g,
       (match) => {
-        let cls = "text-purple-600" // string
+        let cls = "text-purple-600"
         if (/^"/.test(match) && /:$/.test(match)) {
-          cls = "text-red-600" // key
+          cls = "text-red-600"
         } else if (/true|false/.test(match)) {
-          cls = "text-blue-600" // boolean
+          cls = "text-blue-600"
         } else if (/null/.test(match)) {
-          cls = "text-gray-600" // null
+          cls = "text-gray-600"
         } else if (/^-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?$/.test(match)) {
-          cls = "text-green-600" // number
+          cls = "text-green-600"
         }
         return `<span class="${cls}">${match}</span>`
       },
@@ -79,7 +92,7 @@ function JsonFormatter({ jsonString }: { jsonString: string }) {
     try {
       await navigator.clipboard.writeText(formattedJson)
       setCopied(true)
-      setTimeout(() => setCopied(false), 2000) // Reset after 2 seconds
+      setTimeout(() => setCopied(false), 2000)
     } catch (err) {
       console.error("Failed to copy text: ", err)
     }
@@ -104,34 +117,222 @@ function JsonFormatter({ jsonString }: { jsonString: string }) {
   )
 }
 
+// --- START: Define Custom Shadcn Field Template ---
+function ShadcnFieldTemplate(props: FieldTemplateProps) {
+  const { id, classNames, style, label, help, required, description, errors, children, hidden, displayLabel } = props;
+
+  // Don't render hidden fields
+  if (hidden) {
+    return <div style={{ display: 'none' }}>{children}</div>;
+  }
+
+  return (
+    <div className={classNames + " mb-4"} style={style}> {/* Add margin bottom */}
+      {/* Render label if displayLabel is true */}
+      {displayLabel && label && (
+        <Label htmlFor={id} className="block text-sm font-medium text-gray-700 mb-1"> {/* Basic label styling */}
+          {label}
+          {required ? <span className="text-destructive">*</span> : null}
+        </Label>
+      )}
+
+      {/* Render the actual input widget */}
+      {children}
+
+      {/* Render description below the input */}
+      {displayLabel && description ? description : null}
+
+      {/* Render errors below the input/description */}
+      {errors ? <div className="mt-1 text-sm text-destructive">{errors}</div> : null}
+
+      {/* Render help text below errors */}
+      {help ? <div className="mt-1 text-sm text-muted-foreground">{help}</div> : null}
+    </div>
+  );
+}
+// --- END: Define Custom Shadcn Field Template ---
+
+// --- Custom Widgets ---
+
+// Custom BaseInputTemplate to replace the default input rendering
+function ShadcnBaseInputTemplate(props: BaseInputTemplateProps) {
+  const {
+    id,
+    placeholder,
+    required,
+    readonly,
+    disabled,
+    type,
+    value,
+    onChange,
+    onBlur,
+    onFocus,
+    autofocus,
+    options,
+    schema,
+    rawErrors = [],
+  } = props;
+
+  // Don't attempt to render buttons
+  if (type === 'button' || type === 'submit' || type === 'reset') {
+    return null;
+  }
+
+  const inputProps = {
+    id,
+    placeholder,
+    disabled: disabled || readonly,
+    required,
+    autoFocus: autofocus,
+    value: value || '',
+    onChange: (event: React.ChangeEvent<HTMLInputElement>) => onChange(event.target.value),
+    onBlur: onBlur && ((event: React.FocusEvent<HTMLInputElement>) => onBlur(id, event.target.value)),
+    onFocus: onFocus && ((event: React.FocusEvent<HTMLInputElement>) => onFocus(id, event.target.value)),
+  };
+  
+  // For textarea inputs (explicitly set in schema or for strings with format="textarea")
+  if (
+    schema.type === "string" && 
+    (schema.format === "textarea" || options.widget === "textarea")
+  ) {
+    return (
+      <Textarea
+        {...inputProps}
+        className={`w-full ${rawErrors.length > 0 ? 'border-red-500' : ''}`}
+        onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => onChange(event.target.value)}
+      />
+    );
+  }
+  
+  // For all other inputs
+  return (
+    <Input
+      type={type || "text"}
+      {...inputProps}
+      className={`w-full ${rawErrors.length > 0 ? 'border-red-500' : ''}`}
+    />
+  );
+}
+
+// Custom CheckboxWidget
+function ShadcnCheckboxWidget(props: WidgetProps) {
+  const { 
+    id, 
+    value, 
+    disabled, 
+    readonly, 
+    onChange, 
+    label, 
+    schema, 
+    required 
+  } = props;
+  
+  return (
+    <div className="flex items-center space-x-2">
+      <Checkbox
+        id={id}
+        checked={typeof value === "undefined" ? false : value}
+        disabled={disabled || readonly}
+        onCheckedChange={(checked) => onChange(checked)}
+      />
+      <label htmlFor={id} className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+        {label || schema.title}
+        {required ? <span className="text-red-500">*</span> : null}
+      </label>
+    </div>
+  );
+}
+
 export function ResponseCard({
   response,
   isAlternative = false,
   projectId,
   onAnnotationAdded,
   onResponseDeleted,
-  onAnnotationDeleted, // <-- ADD new callback prop
-}: {
-  response: Response
-  isAlternative?: boolean
-  projectId: string
-  onAnnotationAdded?: (targetId: string, newAnnotationData: any) => void
-  onResponseDeleted?: (targetId: string) => void
-  onAnnotationDeleted?: (targetId: string, annotationId: string) => void // <-- ADD prop type
-}) {
-  const [showRawData, setShowRawData] = useState(false)
+  onAnnotationDeleted,
+  activeSchema,
+}: ResponseCardProps) {
+  const [viewMode, setViewMode] = useState<'default' | 'raw' | 'form'>('default')
   const [hideAnnotations, setHideAnnotations] = useState(false)
   const [isAnnotating, setIsAnnotating] = useState(false)
   const [annotationError, setAnnotationError] = useState<string | null>(null)
-  const [isDeleting, setIsDeleting] = useState(false) // <-- ADD deleting state
-  const [deleteError, setDeleteError] = useState<string | null>(null) // <-- ADD delete error state
-  const [deletingAnnotationId, setDeletingAnnotationId] = useState<string | null>(null) // State for specific annotation deletion
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [deletingAnnotationId, setDeletingAnnotationId] = useState<string | null>(null)
   const [annotationDeleteError, setAnnotationDeleteError] = useState<string | null>(null)
+  const [isSftExample, setIsSftExample] = useState<boolean | null>(null)
+  const [isSftLoading, setIsSftLoading] = useState(false)
 
-  console.log(`Rendering ResponseCard ${response.id}: isDeleting=${isDeleting}, isAnnotating=${isAnnotating}`) // <-- ADD THIS
+  useEffect(() => {
+    const checkSftStatus = async () => {
+      if (!response.annotation_target_id) return;
+      
+      setIsSftLoading(true);
+      
+      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
+      const GUEST_USER_ID_HEADER = "X-Guest-User-Id";
+      const apiUrl = `${API_BASE_URL}/mock-next/${projectId}/annotation-targets/${response.annotation_target_id}/is-sft`;
+      const guestUserId = localStorage.getItem("guestUserId");
+      const headers: HeadersInit = {};
+      
+      if (guestUserId) {
+        headers[GUEST_USER_ID_HEADER] = guestUserId;
+      }
+
+      try {
+        const apiResponse = await fetch(apiUrl, {
+          method: "GET",
+          headers
+        });
+
+        if (!apiResponse.ok) {
+          console.error(`Failed to check SFT status: ${apiResponse.status}`);
+          setIsSftExample(null);
+          return;
+        }
+
+        const isSft = await apiResponse.json();
+        setIsSftExample(isSft);
+      } catch (error) {
+        console.error("Error checking SFT status:", error);
+        setIsSftExample(null);
+      } finally {
+        setIsSftLoading(false);
+      }
+    };
+
+    if (response.annotations.length > 0) {
+      checkSftStatus();
+    } else {
+      setIsSftExample(false); // No annotations means not an SFT example
+    }
+  }, [response.annotation_target_id, response.annotations, projectId]);
+
+  const formData = useMemo(() => {
+    if (viewMode === 'form' && response.is_json && response.content) {
+      try {
+        return JSON.parse(response.content)
+      } catch (e) {
+        console.error("Error parsing JSON for form view:", e)
+        return null
+      }
+    }
+    return null
+  }, [viewMode, response.is_json, response.content])
+
+  const canShowFormView = response.is_json && response.obeys_schema === true && activeSchema !== null
+
+  const toggleViewMode = (mode: 'default' | 'raw' | 'form') => {
+    if (viewMode === 'form' && mode !== 'form') {
+      setViewMode('default')
+    } else if (viewMode === 'raw' && mode !== 'raw') {
+      setViewMode('default')
+    } else {
+      setViewMode(mode)
+    }
+  }
 
   const handleDeleteResponse = async () => {
-    console.log("handleDeleteResponse called!") // <-- ADD THIS
     const targetId = response.annotation_target_id
     if (!targetId) {
       console.error("Annotation target ID is missing for deletion:", response.id)
@@ -151,8 +352,6 @@ export function ResponseCard({
       headers[GUEST_USER_ID_HEADER] = guestUserId
     }
 
-    console.log(`Attempting to delete target ${targetId} at ${apiUrl}`)
-
     try {
       const apiResponse = await fetch(apiUrl, {
         method: "DELETE",
@@ -164,20 +363,14 @@ export function ResponseCard({
         try {
           const errorData = await apiResponse.json()
           errorDetail += ` - ${errorData.detail || "Unknown error"}`
-        } catch (jsonError) {
-          // Ignore if response is not JSON
-        }
+        } catch (jsonError) {}
         throw new Error(errorDetail)
       }
 
-      console.log("Target deleted successfully:", targetId)
-
       if (onResponseDeleted) {
-        console.log("Calling onResponseDeleted callback...")
         onResponseDeleted(targetId)
       }
     } catch (error: any) {
-      console.error("Failed to delete target:", error)
       setDeleteError(error.message || "Failed to delete target")
     } finally {
       setIsDeleting(false)
@@ -187,7 +380,6 @@ export function ResponseCard({
   const handleAnnotationSubmit = async (reward: number) => {
     const targetId = response.annotation_target_id
     if (!targetId) {
-      console.error("Annotation target ID is missing for this response:", response.id)
       setAnnotationError("Cannot annotate: Missing target ID.")
       return
     }
@@ -211,8 +403,6 @@ export function ResponseCard({
       annotation_metadata: { submittedFrom: "ResponseCard" },
     })
 
-    console.log(`Submitting annotation to ${apiUrl} with reward ${reward}`)
-
     try {
       const apiResponse = await fetch(apiUrl, {
         method: "POST",
@@ -225,21 +415,16 @@ export function ResponseCard({
         try {
           const errorData = await apiResponse.json()
           errorDetail += ` - ${errorData.detail || "Unknown error"}`
-        } catch (jsonError) {
-          // Ignore if response is not JSON
-        }
+        } catch (jsonError) {}
         throw new Error(errorDetail)
       }
 
       const newAnnotationData = await apiResponse.json()
-      console.log("Annotation submitted successfully:", newAnnotationData)
 
       if (onAnnotationAdded) {
-        console.log("Calling onAnnotationAdded callback...")
         onAnnotationAdded(targetId, newAnnotationData)
       }
     } catch (error: any) {
-      console.error("Failed to submit annotation:", error)
       setAnnotationError(error.message || "Failed to submit annotation")
     } finally {
       setIsAnnotating(false)
@@ -249,12 +434,11 @@ export function ResponseCard({
   const handleDeleteAnnotation = async (annotationId: string) => {
     const targetId = response.annotation_target_id
     if (!targetId) {
-      console.error("Cannot delete annotation: Missing target ID for the response.")
       setAnnotationDeleteError("Cannot delete annotation: Response target ID missing.")
       return
     }
 
-    setDeletingAnnotationId(annotationId) // Show loading state for this specific annotation
+    setDeletingAnnotationId(annotationId)
     setAnnotationDeleteError(null)
 
     const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ""
@@ -265,8 +449,6 @@ export function ResponseCard({
     if (guestUserId) {
       headers[GUEST_USER_ID_HEADER] = guestUserId
     }
-
-    console.log(`Attempting to delete annotation ${annotationId} at ${apiUrl}`)
 
     try {
       const apiResponse = await fetch(apiUrl, {
@@ -279,25 +461,37 @@ export function ResponseCard({
         try {
           const errorData = await apiResponse.json()
           errorDetail += ` - ${errorData.detail || "Unknown error"}`
-        } catch (jsonError) {
-          // Ignore if response is not JSON
-        }
+        } catch (jsonError) {}
         throw new Error(errorDetail)
       }
 
-      console.log("Annotation deleted successfully:", annotationId)
-
       if (onAnnotationDeleted) {
-        console.log("Calling onAnnotationDeleted callback...")
         onAnnotationDeleted(targetId, annotationId)
       }
     } catch (error: any) {
-      console.error("Failed to delete annotation:", error)
       setAnnotationDeleteError(`Failed to delete annotation ${annotationId}: ${error.message || "Unknown error"}`)
     } finally {
-      setDeletingAnnotationId(null) // Clear loading state
+      setDeletingAnnotationId(null)
     }
   }
+
+  const uiSchema: UiSchema = useMemo(() => {
+    return {
+      "ui:classNames": "space-y-4",
+      "ui:options": {
+        className: "w-full rounded-md border border-input bg-background px-3 py-2 text-sm",
+      },
+    };
+  }, []);
+
+  const templates = {
+    FieldTemplate: ShadcnFieldTemplate,
+    BaseInputTemplate: ShadcnBaseInputTemplate,
+  };
+
+  const widgets = {
+    CheckboxWidget: ShadcnCheckboxWidget,
+  };
 
   return (
     <Card className="border-gray-200">
@@ -312,43 +506,58 @@ export function ResponseCard({
             </Badge>
             <span className="text-sm text-gray-500">{new Date(response.created).toLocaleString()}</span>
 
-            {/* --- START: Validation Badges (Adjusted "Not JSON" Style) --- */}
+            {isSftLoading ? (
+              <Badge variant="outline" className="bg-gray-100 text-gray-600 flex items-center gap-1">
+                <RefreshCw className="h-3 w-3 animate-spin" /> SFT...
+              </Badge>
+            ) : isSftExample === true ? (
+              <Badge variant="outline" className="bg-green-50 text-green-600 flex items-center gap-1">
+                <CheckCircle2 className="h-3 w-3" /> SFT Example
+              </Badge>
+            ) : response.annotations.length > 0 ? (
+              <Badge variant="outline" className="bg-amber-50 text-amber-600 flex items-center gap-1">
+                <AlertCircle className="h-3 w-3" /> Not SFT
+              </Badge>
+            ) : null}
 
-            {/* 1. Show "Not JSON" using the "Invalid Schema" style */}
             {!response.is_json && (
-              <Badge variant="outline" className="bg-red-50 text-red-600 flex items-center gap-1"> {/* <-- CHANGE variant and classes */}
+              <Badge variant="outline" className="bg-red-50 text-red-600 flex items-center gap-1">
                 <XCircle className="h-3 w-3" /> Not JSON
               </Badge>
             )}
-
-            {/* 2. Show "JSON" if applicable */}
             {response.is_json && (
               <Badge variant="outline" className="bg-blue-50 text-blue-600">
                 JSON
               </Badge>
             )}
-
-            {/* 3. Show "Valid Schema" if applicable */}
             {response.is_json && response.obeys_schema === true && (
               <Badge variant="outline" className="bg-green-50 text-green-600 flex items-center gap-1">
                 <CheckCircle2 className="h-3 w-3" /> Valid Schema
               </Badge>
             )}
-
-            {/* 4. Show "Invalid Schema" if applicable */}
             {response.is_json && response.obeys_schema === false && (
               <Badge variant="outline" className="bg-red-50 text-red-600 flex items-center gap-1">
-                 <AlertCircle className="h-3 w-3" /> Invalid Schema
+                <AlertCircle className="h-3 w-3" /> Invalid Schema
               </Badge>
             )}
-
-            {/* --- END: Validation Badges --- */}
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => setShowRawData(!showRawData)}>
-              Raw
-            </Button>
-            <Button variant="outline" size="sm">
+            {viewMode !== 'default' && (
+              <Button variant="outline" size="sm" onClick={() => toggleViewMode('default')} title="Show Default View">
+                <FileText className="h-3.5 w-3.5" />
+              </Button>
+            )}
+            {viewMode !== 'raw' && (
+              <Button variant="outline" size="sm" onClick={() => toggleViewMode('raw')} title="Show Raw Data">
+                Raw
+              </Button>
+            )}
+            {canShowFormView && viewMode !== 'form' && (
+              <Button variant="outline" size="sm" onClick={() => toggleViewMode('form')} title="Show Form View">
+                <FileJson className="h-3.5 w-3.5" />
+              </Button>
+            )}
+            <Button variant="outline" size="sm" title="Regenerate (Not Implemented)">
               <RefreshCw className="h-3.5 w-3.5" />
             </Button>
             <Button
@@ -357,6 +566,7 @@ export function ResponseCard({
               className="text-red-600 hover:bg-red-50"
               onClick={handleDeleteResponse}
               disabled={isDeleting || isAnnotating}
+              title="Delete Response"
             >
               {isDeleting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
             </Button>
@@ -365,18 +575,44 @@ export function ResponseCard({
       </CardHeader>
 
       <CardContent className="p-4">
-        {showRawData ? (
+        {viewMode === 'raw' && (
           <div className="relative">
             <pre className="bg-gray-50 p-3 rounded-md overflow-auto text-xs font-mono">
               {JSON.stringify(response, null, 2)}
             </pre>
           </div>
-        ) : response.is_json ? (
-          <JsonFormatter jsonString={response.content} />
-        ) : (
-          <div className="mb-4">
-            <p className="whitespace-pre-wrap">{response.content}</p>
+        )}
+
+        {viewMode === 'form' && canShowFormView && formData && activeSchema && (
+          <div className="rjsf-shadcn p-4 border rounded-lg bg-white">
+            <Form
+              schema={activeSchema}
+              formData={formData}
+              validator={validator}
+              uiSchema={uiSchema}
+              templates={templates}
+              widgets={widgets}
+              disabled={true}
+              onChange={() => {}}
+              onSubmit={() => {}}
+              onError={(errors: RJSFValidationError[]) => console.log("RJSF Errors:", errors)}
+            >
+              <div />
+            </Form>
           </div>
+        )}
+        {viewMode === 'form' && (!canShowFormView || !formData) && (
+          <div className="text-red-500 italic">Cannot display form view. Ensure response is valid JSON matching the schema and schema is loaded.</div>
+        )}
+
+        {viewMode === 'default' && (
+          response.is_json ? (
+            <JsonFormatter jsonString={response.content} />
+          ) : (
+            <div className="mb-4">
+              <p className="whitespace-pre-wrap">{response.content}</p>
+            </div>
+          )
         )}
       </CardContent>
 

@@ -166,7 +166,7 @@ function ShadcnBaseInputTemplate(props: BaseInputTemplateProps) {
     value,
     onChange,
     onBlur,
-    onFocus,
+    onFocus, // Keep the original onFocus handler from props
     autofocus,
     options,
     schema,
@@ -178,38 +178,42 @@ function ShadcnBaseInputTemplate(props: BaseInputTemplateProps) {
     return null;
   }
 
-  const inputProps = {
+  // Base props common to both Input and Textarea
+  const commonProps = {
     id,
     placeholder,
     disabled: disabled || readonly,
     required,
     autoFocus: autofocus,
     value: value || '',
-    onChange: (event: React.ChangeEvent<HTMLInputElement>) => onChange(event.target.value),
-    onBlur: onBlur && ((event: React.FocusEvent<HTMLInputElement>) => onBlur(id, event.target.value)),
-    onFocus: onFocus && ((event: React.FocusEvent<HTMLInputElement>) => onFocus(id, event.target.value)),
+    className: `w-full ${rawErrors.length > 0 ? 'border-red-500' : ''}`, // Apply common classes
   };
-  
-  // For textarea inputs (explicitly set in schema or for strings with format="textarea")
+
+  // For textarea inputs
   if (
-    schema.type === "string" && 
+    schema.type === "string" &&
     (schema.format === "textarea" || options.widget === "textarea")
   ) {
     return (
       <Textarea
-        {...inputProps}
-        className={`w-full ${rawErrors.length > 0 ? 'border-red-500' : ''}`}
+        {...commonProps}
         onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => onChange(event.target.value)}
+        // Use the original onFocus/onBlur but ensure the event type matches Textarea
+        onBlur={onBlur && ((event: React.FocusEvent<HTMLTextAreaElement>) => onBlur(id, event.target.value))}
+        onFocus={onFocus && ((event: React.FocusEvent<HTMLTextAreaElement>) => onFocus(id, event.target.value))}
       />
     );
   }
-  
+
   // For all other inputs
   return (
     <Input
       type={type || "text"}
-      {...inputProps}
-      className={`w-full ${rawErrors.length > 0 ? 'border-red-500' : ''}`}
+      {...commonProps}
+      onChange={(event: React.ChangeEvent<HTMLInputElement>) => onChange(event.target.value)}
+      // Use the original onFocus/onBlur typed for InputElement
+      onBlur={onBlur && ((event: React.FocusEvent<HTMLInputElement>) => onBlur(id, event.target.value))}
+      onFocus={onFocus && ((event: React.FocusEvent<HTMLInputElement>) => onFocus(id, event.target.value))}
     />
   );
 }

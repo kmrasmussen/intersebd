@@ -97,14 +97,71 @@ export function DownloadDatasetComponent({
     setCollapsed(!collapsed)
   }
 
-  const handleDownloadSft = () => {
-    setIsDownloadingSft(true)
-    // Simulate download
-    setTimeout(() => {
-      setIsDownloadingSft(false)
-      console.log("SFT Dataset downloaded")
-    }, 1500)
-  }
+  const handleDownloadSft = async () => { // Make the function async
+    if (!projectId) {
+      console.error("DownloadDatasetComponent: Cannot download SFT - projectId is missing.");
+      setSftError("Project ID is missing."); // Show error to user
+      return;
+    }
+
+    setIsDownloadingSft(true);
+    setSftError(null); // Clear previous errors
+    console.log(`DownloadDatasetComponent: Starting SFT dataset download for project ${projectId}`);
+
+    const guestUserId = localStorage.getItem('guestUserId');
+    const headers: HeadersInit = {};
+    if (guestUserId) {
+      headers[GUEST_USER_ID_HEADER] = guestUserId;
+    }
+    // Adjust threshold if needed, or remove if default 0.75 is always okay
+    const url = `${API_BASE_URL}/mock-next/${projectId}/sft-dataset.jsonl?sft_threshold=0.75`;
+
+    try {
+      const response = await fetch(url, {
+        method: 'GET', // Use GET for downloading
+        headers: headers,
+      });
+
+      if (!response.ok) {
+        let errorDetail = `Failed to download SFT dataset: ${response.status}`;
+        try { const errorData = await response.json(); errorDetail += ` - ${errorData.detail || 'Unknown error'}`; } catch { }
+        throw new Error(errorDetail);
+      }
+
+      // Get filename from Content-Disposition header if available, otherwise use default
+      const contentDisposition = response.headers.get('Content-Disposition');
+      let filename = `sft_dataset_${projectId}.jsonl`; // Default filename
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="?(.+)"?/i);
+        if (filenameMatch && filenameMatch.length > 1) {
+          filename = filenameMatch[1];
+        }
+      }
+
+      // Get the response body as text (JSONL)
+      const blob = await response.blob(); // Get as blob to handle file download
+
+      // Create a temporary link to trigger the download
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.setAttribute('download', filename); // Use the determined filename
+      document.body.appendChild(link);
+      link.click();
+
+      // Clean up the temporary link and URL object
+      link.parentNode?.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+
+      console.log("DownloadDatasetComponent: SFT Dataset download initiated.");
+
+    } catch (err: any) {
+      console.error("DownloadDatasetComponent: Error downloading SFT dataset:", err);
+      setSftError(err.message || "Failed to download SFT dataset.");
+    } finally {
+      setIsDownloadingSft(false);
+    }
+  };
 
   const handleDownloadDpo = () => {
     setIsDownloadingDpo(true)
@@ -132,7 +189,6 @@ export function DownloadDatasetComponent({
 
   const isSftReady = sftRequestCount >= requiredResponses
   const isDpoReady = dpoAnnotatedResponses >= requiredResponses // DPO still uses mocked value
-  const isAnyDatasetNotReady = !isSftReady || !isDpoReady
 
   return (
     <Card className={`mb-6 ${className}`}>

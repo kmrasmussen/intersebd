@@ -18,6 +18,7 @@ from models import User
 from jsonschema import validate as validate_jsonschema  # Import the validator function
 from jsonschema import Draft7Validator  # Import the specific validator class
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError  # Import the specific exception
+from fastapi import Response
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,23 @@ class ProjectJsonSchemaResponse(BaseModel):
 
 class SftRequestCountResponse(BaseModel):
     sft_request_count: int
+
+# --- NEW: Schemas for SFT Dataset Generation ---
+class SftMessageSchema(BaseModel):
+    """Represents a single message turn in a conversation."""
+    role: str = Field(..., description="Role of the speaker (e.g., 'system', 'user', 'assistant')")
+    content: str = Field(..., description="The text content of the message")
+
+    class Config:
+        from_attributes = True
+
+class SftConversationSchema(BaseModel):
+    """Represents a full conversation, typically a list of messages."""
+    messages: List[SftMessageSchema] = Field(..., description="A list of messages forming the conversation")
+
+    class Config:
+        from_attributes = True
+# --- End NEW Schemas ---
 
 # --- Helper Functions ---
 
@@ -230,6 +248,109 @@ def map_to_response_detail(
         is_json=is_json,
         obeys_schema=obeys_schema
     )
+
+async def _generate_project_sft_data(
+    project_id: uuid.UUID,
+    db: AsyncSession,
+    sft_threshold: float = 0.75
+) -> List[SftConversationSchema]:
+    """
+    Generates a list of SFT conversation data for a given project,
+    based on the is_sft_example criteria.
+    """
+    logger.info(f"Generating SFT conversation data for project {project_id}")
+    sft_dataset: List[SftConversationSchema] = []
+
+    # --- Fetch Active Schema Once ---
+    active_schema_content: Optional[Dict[str, Any]] = None
+    try:
+        stmt_schema = (
+            select(models.ProjectJsonSchema)
+            .where(models.ProjectJsonSchema.project_id == project_id)
+            .where(models.ProjectJsonSchema.is_active == True)
+            .order_by(models.ProjectJsonSchema.created_at.desc())
+        )
+        result_schema = await db.execute(stmt_schema)
+        active_schema_obj = result_schema.scalars().first()
+        if active_schema_obj:
+            active_schema_content = active_schema_obj.schema_content
+            logger.debug(f"Found active schema {active_schema_obj.id} for SFT dataset generation.")
+        else:
+            logger.debug(f"No active schema found for project {project_id}. SFT checks will only use reward.")
+    except Exception as schema_exc:
+        logger.error(f"Error fetching active schema for SFT dataset (project {project_id}): {schema_exc}", exc_info=True)
+        # Proceed without schema validation if fetching fails
+    # --- End Fetch Active Schema ---
+
+    # --- Query to fetch requests and necessary related data ---
+    # Same query structure as get_sft_request_count
+    stmt_requests = (
+        select(models.CompletionsRequest)
+        .where(models.CompletionsRequest.project_id == project_id)
+        .options(
+            selectinload(models.CompletionsRequest.completion_response)
+            .selectinload(models.CompletionResponse.annotation_target)
+            .options(
+                selectinload(models.AnnotationTarget.annotations),
+                joinedload(models.AnnotationTarget.completion_response, innerjoin=False),
+                joinedload(models.AnnotationTarget.completion_alternative, innerjoin=False)
+            ),
+            selectinload(models.CompletionsRequest.alternatives)
+            .selectinload(models.CompletionAlternative.annotation_target)
+            .options(
+                selectinload(models.AnnotationTarget.annotations),
+                joinedload(models.AnnotationTarget.completion_response, innerjoin=False),
+                joinedload(models.AnnotationTarget.completion_alternative, innerjoin=False)
+            )
+        )
+        .order_by(models.CompletionsRequest.id) # Consistent ordering is good practice
+    )
+    # --- End Query ---
+
+    result = await db.execute(stmt_requests)
+    requests = result.scalars().unique().all()
+    logger.debug(f"Fetched {len(requests)} requests for SFT dataset generation.")
+
+    # --- Process Requests and Build Dataset ---
+    for req in requests:
+        # 1. Parse Base Messages
+        base_messages_data = req.messages
+        if not isinstance(base_messages_data, list):
+             logger.warning(f"Request {req.id} messages field is not a list, skipping for SFT.")
+             continue
+        try:
+            base_messages = [
+                SftMessageSchema(role=msg.get("role"), content=msg.get("content"))
+                for msg in base_messages_data
+                if isinstance(msg, dict) and 'role' in msg and 'content' in msg
+            ]
+        except Exception as e:
+            logger.warning(f"Failed to parse base messages for request {req.id}: {e}, skipping for SFT.")
+            continue
+
+        # 2. Check Main Response
+        if req.completion_response and req.completion_response.annotation_target:
+            target = req.completion_response.annotation_target
+            if is_sft_example(target, active_schema=active_schema_content, threshold=sft_threshold):
+                assistant_content = req.completion_response.choice_content or ""
+                assistant_message = SftMessageSchema(role="assistant", content=assistant_content)
+                conversation = SftConversationSchema(messages=base_messages + [assistant_message])
+                sft_dataset.append(conversation)
+                logger.debug(f"Added SFT entry from request {req.id} - main response {req.completion_response.id}")
+
+        # 3. Check Alternatives
+        for alt in req.alternatives:
+            if alt.annotation_target:
+                target = alt.annotation_target
+                if is_sft_example(target, active_schema=active_schema_content, threshold=sft_threshold):
+                    assistant_content = alt.alternative_content or ""
+                    assistant_message = SftMessageSchema(role="assistant", content=assistant_content)
+                    conversation = SftConversationSchema(messages=base_messages + [assistant_message])
+                    sft_dataset.append(conversation)
+                    logger.debug(f"Added SFT entry from request {req.id} - alternative {alt.id}")
+
+    logger.info(f"Generated {len(sft_dataset)} SFT conversation entries for project {project_id}.")
+    return sft_dataset
 
 # --- Router ---
 
@@ -1170,4 +1291,55 @@ async def get_sft_request_count(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to calculate SFT request count due to an internal error."
+        )
+    
+@router.get(
+    "/{project_id}/sft-dataset.jsonl",
+    summary="Generate an SFT dataset (JSON Lines) for the project",
+    response_class=Response # Use FastAPI's Response class directly
+)
+async def download_sft_dataset_jsonl(
+    project_id: uuid.UUID = Path(..., description="The UUID of the project"),
+    sft_threshold: float = Query(0.75, description="The minimum average reward threshold for SFT examples."),
+    db: AsyncSession = Depends(get_db),
+    membership: models.ProjectMembership = Depends(verify_project_membership),
+):
+    """
+    Generates a dataset suitable for Supervised Fine-Tuning (SFT) in JSON Lines format.
+
+    Each line in the response body is a JSON object representing one conversation
+    that meets the SFT criteria (based on reward threshold and schema compliance if applicable).
+    """
+    logger.info(f"Generating SFT dataset (JSONL) for project {project_id} by user {membership.user_id}")
+
+    try:
+        sft_data: List[SftConversationSchema] = await _generate_project_sft_data(
+            project_id=project_id,
+            db=db,
+            sft_threshold=sft_threshold
+        )
+
+        if not sft_data:
+            logger.info(f"No SFT data generated for project {project_id}. Returning empty response.")
+            return Response(content="", media_type="application/jsonl", status_code=status.HTTP_200_OK) # Return empty 200
+
+        # Convert list of Pydantic objects to JSONL string
+        # Use exclude_none=True if you want to omit fields like 'weight' if they are None
+        jsonl_content = "\n".join([conv.model_dump_json(exclude_none=True) for conv in sft_data])
+
+        # Add a final newline character, common for JSONL files
+        jsonl_content += "\n"
+
+        # Set headers for file download
+        headers = {
+            'Content-Disposition': f'attachment; filename="sft_dataset_{project_id}.jsonl"'
+        }
+
+        return Response(content=jsonl_content, media_type="application/jsonl", headers=headers)
+
+    except Exception as e:
+        logger.exception(f"Error generating SFT JSONL dataset for project {project_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate SFT dataset due to an internal error."
         )

@@ -110,6 +110,9 @@ class ProjectJsonSchemaResponse(BaseModel):
 class SftRequestCountResponse(BaseModel):
     sft_request_count: int
 
+class DpoReadyCountResponse(BaseModel):
+    dpo_ready_count: int
+
 # --- NEW: Schemas for SFT Dataset Generation ---
 class SftMessageSchema(BaseModel):
     """Represents a single message turn in a conversation."""
@@ -364,17 +367,18 @@ async def get_requests_summary(
     project_id: uuid.UUID = Path(..., description="The UUID of the project"),
     db: AsyncSession = Depends(get_db),
     membership: models.ProjectMembership = Depends(verify_project_membership),
-    sft_threshold: float = 0.75
+    sft_threshold: float = Query(0.75, description="Minimum average reward for SFT examples."),
+    dpo_negative_threshold: float = Query(0.25, description="Maximum average reward for DPO negative examples.") # Add DPO threshold
 ):
     """
     Retrieves a summary of completion requests for the specified project.
-    Calculates SFT status based on annotations and schema compliance.
+    Calculates SFT and DPO status based on annotations and schema compliance.
     Requires the user to be a member of the project.
     """
     logger.info(f"Fetching requests summary for project ID: {project_id} for user {membership.user_id}")
 
     try:
-        # --- Fetch Active Schema Once ---
+        # --- Fetch Active Schema Once (no changes needed here) ---
         active_schema_content: Optional[Dict[str, Any]] = None
         try:
             stmt_schema = (
@@ -387,22 +391,19 @@ async def get_requests_summary(
             active_schema_obj = result_schema.scalars().first()
             if active_schema_obj:
                 active_schema_content = active_schema_obj.schema_content
-                logger.debug(f"Found active schema {active_schema_obj.id} for request summary SFT checks.")
+                logger.debug(f"Found active schema {active_schema_obj.id} for request summary checks.")
             else:
-                logger.debug(f"No active schema found for project {project_id}. SFT checks will only use reward.")
+                logger.debug(f"No active schema found for project {project_id}. Status checks will only use reward.")
         except Exception as schema_exc:
             logger.error(f"Error fetching active schema for request summary (project {project_id}): {schema_exc}", exc_info=True)
-            # Continue without schema validation if fetching fails
         # --- End Fetch Active Schema ---
 
-        # --- Query with outerjoin reinstated for sorting ---
+        # --- Query (no changes needed here) ---
         stmt_requests = (
             select(models.CompletionsRequest)
             .where(models.CompletionsRequest.project_id == project_id)
-            # Add the outerjoin back specifically for the ORDER BY clause
             .outerjoin(models.CompletionResponse, models.CompletionsRequest.completion_response)
             .options(
-                # Keep the selectinload/joinedload structure for data loading
                 selectinload(models.CompletionsRequest.completion_response)
                 .selectinload(models.CompletionResponse.annotation_target)
                 .options(
@@ -419,7 +420,6 @@ async def get_requests_summary(
                 )
             )
             .order_by(
-                # This should now work because of the outerjoin above
                 models.CompletionResponse.created.desc().nullslast(),
                 models.CompletionsRequest.id.desc()
             )
@@ -427,7 +427,6 @@ async def get_requests_summary(
         # --- End Query ---
 
         result = await db.execute(stmt_requests)
-        # Keep unique() as joinedload might still cause duplicates
         requests = result.scalars().unique().all()
 
         if not requests:
@@ -447,7 +446,7 @@ async def get_requests_summary(
                      earliest_alt_ts = min(alt.created_at for alt in req.alternatives if alt.created_at)
                      timestamp_str = format_timestamp(earliest_alt_ts)
                  except (ValueError, TypeError):
-                     pass # Keep N/A if no valid timestamps
+                     pass
 
             name = f"Request {req_id_str[:8]}..."
             question = "N/A"
@@ -466,6 +465,9 @@ async def get_requests_summary(
             total_responses = 0
             annotated_responses_count = 0
             request_sft_status: RequestStatus = "none"
+            # --- NEW: Initialize DPO status ---
+            request_dpo_status: RequestStatus = "none"
+            # --- End NEW ---
 
             targets_to_check: List[models.AnnotationTarget] = []
             if req.completion_response and req.completion_response.annotation_target:
@@ -477,13 +479,32 @@ async def get_requests_summary(
 
             total_responses = len(targets_to_check)
 
+            # --- Calculate SFT Status (check only if not already complete) ---
+            found_sft_for_request = False
             for target in targets_to_check:
                 if target.annotations:
                     annotated_responses_count += 1
-                    # Call updated is_sft_example with target and schema
-                    if is_sft_example(target, active_schema=active_schema_content, threshold=sft_threshold):
-                        request_sft_status = "complete"
-                        break # Found one SFT example
+                    if not found_sft_for_request:
+                        if is_sft_example(target, active_schema=active_schema_content, threshold=sft_threshold):
+                            found_sft_for_request = True
+                            # Don't break here, need to count all annotated responses
+
+            if found_sft_for_request:
+                request_sft_status = "complete"
+            elif annotated_responses_count > 0:
+                 request_sft_status = "partial" # If annotated but none are SFT
+            # else remains "none"
+
+            # --- NEW: Calculate DPO Status using is_dpo_ready ---
+            if is_dpo_ready(
+                request=req, # Pass the whole request object
+                active_schema=active_schema_content,
+                sft_threshold=sft_threshold,
+                dpo_negative_threshold=dpo_negative_threshold
+            ):
+                request_dpo_status = "complete"
+            # else remains "none" (no partial state defined for DPO readiness)
+            # --- End NEW ---
 
             summary = MockRequestSummary(
                 id=req_id_str,
@@ -493,7 +514,7 @@ async def get_requests_summary(
                 annotatedResponses=annotated_responses_count,
                 timestamp=timestamp_str,
                 sftStatus=request_sft_status,
-                dpoStatus="none",
+                dpoStatus=request_dpo_status, # Use calculated DPO status
             )
             summary_list.append(summary)
 
@@ -1090,6 +1111,141 @@ def is_sft_example(
     logger.debug(f"SFT Check Passed for target {target.id} (Reward >= {threshold} and Schema checks passed if applicable)")
     return True
 
+# ... after is_sft_example function ...
+
+def is_dpo_negative_example(
+    target: models.AnnotationTarget,
+    active_schema: Optional[Dict[str, Any]] = None,
+    threshold: float = 0.25 # Default threshold for negative examples
+) -> bool:
+    """
+    Determines if an annotation target qualifies as a DPO negative example.
+    Checks average reward is BELOW the threshold and, if an active schema is provided,
+    also validates JSON format and schema compliance.
+
+    Args:
+        target: The AnnotationTarget object, potentially with loaded relationships.
+        active_schema: The active JSON schema for the project, if any.
+        threshold: The maximum average reward to qualify as DPO negative (default: 0.25)
+
+    Returns:
+        bool: True if the target qualifies as a DPO negative example, False otherwise
+    """
+    # 1. Check Annotations and Reward Average (always required)
+    if not target.annotations:
+        return False # Must have annotations
+
+    total_reward = sum(annotation.reward for annotation in target.annotations if annotation.reward is not None)
+    num_annotations_with_reward = sum(1 for annotation in target.annotations if annotation.reward is not None)
+    if num_annotations_with_reward == 0:
+         return False # Cannot calculate average if no rewards are present
+
+    average_reward = total_reward / len(target.annotations)
+
+    # --- DPO Negative Check: Reward must be LESS THAN the threshold ---
+    if average_reward >= threshold:
+        logger.debug(f"DPO Negative Check Failed for target {target.id}: Average reward {average_reward} >= {threshold}")
+        return False # Failed reward threshold (reward is too high)
+
+    # 2. Check JSON and Schema if active_schema is provided (same logic as SFT)
+    if active_schema:
+        logger.debug(f"DPO Negative Check for target {target.id}: Active schema provided. Performing JSON/Schema validation.")
+        content: Optional[str] = None
+        source_id_for_log: str = f"target {target.id}"
+
+        if target.completion_response:
+            content = target.completion_response.choice_content
+            source_id_for_log = f"response {target.completion_response.id}"
+        elif target.completion_alternative:
+            content = target.completion_alternative.alternative_content
+            source_id_for_log = f"alternative {target.completion_alternative.id}"
+
+        if not content:
+            logger.debug(f"DPO Negative Check Failed for {source_id_for_log}: No content found.")
+            return False
+
+        try:
+            parsed_content = json.loads(content)
+        except json.JSONDecodeError:
+            logger.debug(f"DPO Negative Check Failed for {source_id_for_log}: Content is not valid JSON.")
+            return False
+
+        try:
+            validate_jsonschema(instance=parsed_content, schema=active_schema)
+            logger.debug(f"DPO Negative Check Passed Schema Validation for {source_id_for_log}.")
+        except JsonSchemaValidationError:
+            logger.debug(f"DPO Negative Check Failed for {source_id_for_log}: Content does not obey schema.")
+            return False
+        except Exception as e:
+            logger.warning(f"DPO Negative Check encountered unexpected validation error for {source_id_for_log}: {e}")
+            return False
+
+    # If all checks passed (reward is low enough, and schema checks passed if applicable)
+    logger.debug(f"DPO Negative Check Passed for target {target.id} (Reward < {threshold} and Schema checks passed if applicable)")
+    return True
+
+# ... after is_dpo_negative_example function ...
+
+def is_dpo_ready(
+    request: models.CompletionsRequest,
+    active_schema: Optional[Dict[str, Any]] = None,
+    sft_threshold: float = 0.75,
+    dpo_negative_threshold: float = 0.25
+) -> bool:
+    """
+    Determines if a CompletionsRequest is ready for DPO.
+    A request is DPO ready if it has at least one associated AnnotationTarget
+    that qualifies as an SFT example AND at least one associated AnnotationTarget
+    that qualifies as a DPO negative example.
+
+    Args:
+        request: The CompletionsRequest object, with relationships loaded.
+        active_schema: The active JSON schema for the project, if any.
+        sft_threshold: The minimum average reward for SFT examples.
+        dpo_negative_threshold: The maximum average reward for DPO negative examples.
+
+    Returns:
+        bool: True if the request is DPO ready, False otherwise.
+    """
+    found_sft = False
+    found_dpo_negative = False
+
+    targets_to_check: List[models.AnnotationTarget] = []
+    if request.completion_response and request.completion_response.annotation_target:
+        targets_to_check.append(request.completion_response.annotation_target)
+    if request.alternatives:
+        for alt in request.alternatives:
+            if alt.annotation_target:
+                targets_to_check.append(alt.annotation_target)
+
+    if not targets_to_check:
+        logger.debug(f"Request {request.id} has no annotation targets, cannot be DPO ready.")
+        return False # No targets to check
+
+    for target in targets_to_check:
+        if not found_sft:
+            if is_sft_example(target, active_schema=active_schema, threshold=sft_threshold):
+                found_sft = True
+                logger.debug(f"DPO Ready Check for Request {request.id}: Found SFT example (target {target.id}).")
+
+        if not found_dpo_negative:
+            if is_dpo_negative_example(target, active_schema=active_schema, threshold=dpo_negative_threshold):
+                found_dpo_negative = True
+                logger.debug(f"DPO Ready Check for Request {request.id}: Found DPO Negative example (target {target.id}).")
+
+        # Optimization: If both are found, no need to check further targets for this request
+        if found_sft and found_dpo_negative:
+            logger.debug(f"DPO Ready Check for Request {request.id}: Found both SFT and DPO Negative examples. Result: True.")
+            return True
+
+    # If loop finishes and we haven't found both
+    logger.debug(f"DPO Ready Check for Request {request.id}: Finished checking targets. Found SFT: {found_sft}, Found DPO Negative: {found_dpo_negative}. Result: False.")
+    return False
+
+# ... rest of the code ...
+
+# ... rest of the code ...
+
 @router.get(
     "/{project_id}/annotation-targets/{annotation_target_id}/is-sft",
     response_model=bool,
@@ -1196,6 +1352,214 @@ async def check_if_sft_example(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to determine SFT status due to an internal error."
         )
+    
+# ... after check_if_sft_example endpoint ...
+
+@router.get(
+    "/{project_id}/annotation-targets/{annotation_target_id}/is-dpo-negative",
+    response_model=bool,
+    summary="Check if an annotation target qualifies as a DPO negative example."
+)
+async def check_if_dpo_negative_example(
+    project_id: uuid.UUID = Path(..., description="The UUID of the project"),
+    annotation_target_id: uuid.UUID = Path(..., description="The UUID of the annotation target to check"),
+    threshold: float = Query(0.25, description="The maximum average reward threshold for DPO negative."), # Default 0.25
+    db: AsyncSession = Depends(get_db),
+    membership: models.ProjectMembership = Depends(verify_project_membership),
+):
+    """
+    Determines if an annotation target qualifies as a DPO negative example based on its annotations
+    (average reward < threshold) and schema compliance if an active schema exists.
+    """
+    logger.info(f"Checking if annotation target {annotation_target_id} is a DPO negative example (project: {project_id})")
+
+    try:
+        # --- Fetch Active Schema (same as is-sft endpoint) ---
+        active_schema_content: Optional[Dict[str, Any]] = None
+        try:
+            stmt_schema = (
+                select(models.ProjectJsonSchema)
+                .where(models.ProjectJsonSchema.project_id == project_id)
+                .where(models.ProjectJsonSchema.is_active == True)
+                .order_by(models.ProjectJsonSchema.created_at.desc())
+            )
+            result_schema = await db.execute(stmt_schema)
+            active_schema_obj = result_schema.scalars().first()
+            if active_schema_obj:
+                active_schema_content = active_schema_obj.schema_content
+                logger.debug(f"Found active schema {active_schema_obj.id} for DPO negative check.")
+            else:
+                logger.debug(f"No active schema found for project {project_id}. DPO negative check will only use reward.")
+        except Exception as schema_exc:
+            logger.error(f"Error fetching active schema during DPO negative check for project {project_id}: {schema_exc}", exc_info=True)
+        # --- End Fetch Active Schema ---
+
+        # --- Fetch Target (same as is-sft endpoint) ---
+        stmt = (
+            select(models.AnnotationTarget)
+            .options(
+                selectinload(models.AnnotationTarget.annotations),
+                selectinload(models.AnnotationTarget.completion_response),
+                selectinload(models.AnnotationTarget.completion_alternative)
+            )
+            .where(models.AnnotationTarget.id == annotation_target_id)
+        )
+        result = await db.execute(stmt)
+        target = result.scalars().first()
+
+        if not target:
+            logger.warning(f"Annotation target {annotation_target_id} not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Annotation target not found."
+            )
+        # --- End Fetch Target ---
+
+        # --- Project Verification (same as is-sft endpoint) ---
+        belongs_to_project = False
+        stmt_check_response = (
+            select(models.CompletionResponse.id)
+            .join(models.CompletionsRequest, models.CompletionResponse.completion_request_id == models.CompletionsRequest.id)
+            .where(models.CompletionResponse.annotation_target_id == annotation_target_id)
+            .where(models.CompletionsRequest.project_id == project_id)
+            .limit(1)
+        )
+        result_resp = await db.execute(stmt_check_response)
+        if result_resp.scalar_one_or_none() is not None:
+            belongs_to_project = True
+
+        if not belongs_to_project:
+            stmt_check_alt = (
+                select(models.CompletionAlternative.id)
+                .where(models.CompletionAlternative.annotation_target_id == annotation_target_id)
+                .where(models.CompletionAlternative.project_id == project_id)
+                .limit(1)
+            )
+            result_alt = await db.execute(stmt_check_alt)
+            if result_alt.scalar_one_or_none() is not None:
+                belongs_to_project = True
+
+        if not belongs_to_project:
+            logger.warning(f"Annotation target {annotation_target_id} not found in project {project_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Annotation target not found in this project."
+            )
+        # --- End Project Verification ---
+
+        # Determine if this is a DPO negative example using the new function
+        is_dpo_neg = is_dpo_negative_example(target, active_schema=active_schema_content, threshold=threshold)
+        logger.info(f"Annotation target {annotation_target_id}: is_dpo_negative={is_dpo_neg} (threshold={threshold}, schema_checked={active_schema_content is not None})")
+
+        return is_dpo_neg
+
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        logger.exception(f"Error checking if annotation target {annotation_target_id} is a DPO negative example: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to determine DPO negative status due to an internal error."
+        )
+
+# ... rest of the router code ...
+
+# ... after get_sft_request_count endpoint ...
+
+@router.get(
+    "/{project_id}/dpo-ready-count",
+    response_model=DpoReadyCountResponse,
+    summary="Get the count of requests ready for DPO."
+)
+async def get_dpo_ready_count(
+    project_id: uuid.UUID = Path(..., description="The UUID of the project"),
+    db: AsyncSession = Depends(get_db),
+    membership: models.ProjectMembership = Depends(verify_project_membership),
+    sft_threshold: float = Query(0.75, description="Minimum average reward for SFT examples."),
+    dpo_negative_threshold: float = Query(0.25, description="Maximum average reward for DPO negative examples.")
+):
+    """
+    Calculates and returns the number of unique CompletionsRequests
+    within the project that have at least one SFT example AND at least one DPO negative example.
+    """
+    logger.info(f"Calculating DPO ready count for project {project_id} for user {membership.user_id}")
+
+    try:
+        # --- Fetch Active Schema Once ---
+        active_schema_content: Optional[Dict[str, Any]] = None
+        try:
+            # (Same schema fetching logic as in get_requests_summary)
+            stmt_schema = (
+                select(models.ProjectJsonSchema)
+                .where(models.ProjectJsonSchema.project_id == project_id)
+                .where(models.ProjectJsonSchema.is_active == True)
+                .order_by(models.ProjectJsonSchema.created_at.desc())
+            )
+            result_schema = await db.execute(stmt_schema)
+            active_schema_obj = result_schema.scalars().first()
+            if active_schema_obj:
+                active_schema_content = active_schema_obj.schema_content
+                logger.debug(f"Found active schema {active_schema_obj.id} for DPO ready count.")
+            else:
+                logger.debug(f"No active schema found for project {project_id}. DPO ready count will only use reward.")
+        except Exception as schema_exc:
+            logger.error(f"Error fetching active schema for DPO ready count (project {project_id}): {schema_exc}", exc_info=True)
+        # --- End Fetch Active Schema ---
+
+        # --- Query to fetch requests and necessary related data for DPO check ---
+        # This query needs to load relationships needed by is_dpo_ready
+        stmt_requests = (
+            select(models.CompletionsRequest)
+            .where(models.CompletionsRequest.project_id == project_id)
+            .options(
+                # Load relationships needed by is_dpo_ready -> is_sft_example / is_dpo_negative_example
+                selectinload(models.CompletionsRequest.completion_response)
+                .selectinload(models.CompletionResponse.annotation_target)
+                .options(
+                    selectinload(models.AnnotationTarget.annotations),
+                    joinedload(models.AnnotationTarget.completion_response, innerjoin=False),
+                    joinedload(models.AnnotationTarget.completion_alternative, innerjoin=False)
+                ),
+                selectinload(models.CompletionsRequest.alternatives)
+                .selectinload(models.CompletionAlternative.annotation_target)
+                .options(
+                    selectinload(models.AnnotationTarget.annotations),
+                    joinedload(models.AnnotationTarget.completion_response, innerjoin=False),
+                    joinedload(models.AnnotationTarget.completion_alternative, innerjoin=False)
+                )
+            )
+            # No ordering needed for just counting
+        )
+        # --- End Query ---
+
+        result = await db.execute(stmt_requests)
+        # Use unique() because joinedload can cause duplicate parent objects
+        requests = result.scalars().unique().all()
+
+        dpo_ready_request_count = 0
+        for req in requests:
+            # Call is_dpo_ready with the request and thresholds
+            if is_dpo_ready(
+                request=req,
+                active_schema=active_schema_content,
+                sft_threshold=sft_threshold,
+                dpo_negative_threshold=dpo_negative_threshold
+            ):
+                dpo_ready_request_count += 1
+                # No need to break, is_dpo_ready already checks the whole request
+
+        logger.info(f"Found {dpo_ready_request_count} DPO-ready requests for project {project_id}")
+        return DpoReadyCountResponse(dpo_ready_count=dpo_ready_request_count)
+
+    except Exception as e:
+        logger.exception(f"Error calculating DPO ready count for project {project_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to calculate DPO ready count due to an internal error."
+        )
+
+# ... after get_dpo_ready_count endpoint ...
+# ... download_sft_dataset_jsonl endpoint ...
 
 @router.get(
     "/{project_id}/sft-request-count",

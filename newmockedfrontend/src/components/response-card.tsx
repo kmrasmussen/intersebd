@@ -266,49 +266,63 @@ export function ResponseCard({
   const [annotationDeleteError, setAnnotationDeleteError] = useState<string | null>(null)
   const [isSftExample, setIsSftExample] = useState<boolean | null>(null)
   const [isSftLoading, setIsSftLoading] = useState(false)
+  const [isDpoNegativeExample, setIsDpoNegativeExample] = useState<boolean | null>(null)
+  const [isDpoNegativeLoading, setIsDpoNegativeLoading] = useState(false)
 
   useEffect(() => {
-    const checkSftStatus = async () => {
+    const checkStatuses = async () => {
       if (!response.annotation_target_id) return;
-      
-      setIsSftLoading(true);
-      
+
       const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
       const GUEST_USER_ID_HEADER = "X-Guest-User-Id";
-      const apiUrl = `${API_BASE_URL}/mock-next/${projectId}/annotation-targets/${response.annotation_target_id}/is-sft`;
       const guestUserId = localStorage.getItem("guestUserId");
       const headers: HeadersInit = {};
-      
       if (guestUserId) {
         headers[GUEST_USER_ID_HEADER] = guestUserId;
       }
 
+      setIsSftLoading(true);
+      const sftUrl = `${API_BASE_URL}/mock-next/${projectId}/annotation-targets/${response.annotation_target_id}/is-sft`;
       try {
-        const apiResponse = await fetch(apiUrl, {
-          method: "GET",
-          headers
-        });
-
-        if (!apiResponse.ok) {
-          console.error(`Failed to check SFT status: ${apiResponse.status}`);
+        const sftResponse = await fetch(sftUrl, { method: "GET", headers });
+        if (!sftResponse.ok) {
+          console.error(`Failed to check SFT status: ${sftResponse.status}`);
           setIsSftExample(null);
-          return;
+        } else {
+          const isSft = await sftResponse.json();
+          setIsSftExample(isSft);
         }
-
-        const isSft = await apiResponse.json();
-        setIsSftExample(isSft);
       } catch (error) {
         console.error("Error checking SFT status:", error);
         setIsSftExample(null);
       } finally {
         setIsSftLoading(false);
       }
+
+      setIsDpoNegativeLoading(true);
+      const dpoNegUrl = `${API_BASE_URL}/mock-next/${projectId}/annotation-targets/${response.annotation_target_id}/is-dpo-negative`;
+      try {
+        const dpoNegResponse = await fetch(dpoNegUrl, { method: "GET", headers });
+        if (!dpoNegResponse.ok) {
+          console.error(`Failed to check DPO Negative status: ${dpoNegResponse.status}`);
+          setIsDpoNegativeExample(null);
+        } else {
+          const isDpoNeg = await dpoNegResponse.json();
+          setIsDpoNegativeExample(isDpoNeg);
+        }
+      } catch (error) {
+        console.error("Error checking DPO Negative status:", error);
+        setIsDpoNegativeExample(null);
+      } finally {
+        setIsDpoNegativeLoading(false);
+      }
     };
 
     if (response.annotations.length > 0) {
-      checkSftStatus();
+      checkStatuses();
     } else {
-      setIsSftExample(false); // No annotations means not an SFT example
+      setIsSftExample(false);
+      setIsDpoNegativeExample(false);
     }
   }, [response.annotation_target_id, response.annotations, projectId]);
 
@@ -521,6 +535,20 @@ export function ResponseCard({
             ) : response.annotations.length > 0 ? (
               <Badge variant="outline" className="bg-amber-50 text-amber-600 flex items-center gap-1">
                 <AlertCircle className="h-3 w-3" /> Not SFT
+              </Badge>
+            ) : null}
+
+            {isDpoNegativeLoading ? (
+              <Badge variant="outline" className="bg-gray-100 text-gray-600 flex items-center gap-1">
+                <RefreshCw className="h-3 w-3 animate-spin" /> DPO Neg...
+              </Badge>
+            ) : isDpoNegativeExample === true ? (
+              <Badge variant="outline" className="bg-green-50 text-green-600 flex items-center gap-1">
+                <CheckCircle2 className="h-3 w-3" /> DPO Negative
+              </Badge>
+            ) : response.annotations.length > 0 ? (
+              <Badge variant="outline" className="bg-amber-50 text-amber-600 flex items-center gap-1">
+                <AlertCircle className="h-3 w-3" /> Not DPO Neg
               </Badge>
             ) : null}
 

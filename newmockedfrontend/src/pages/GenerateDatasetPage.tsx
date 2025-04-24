@@ -20,7 +20,6 @@ export default function GenerateDatasetPage() {
       <div className="max-w-2xl">
         {/* Pass the dynamic projectId from useParams */}
         <DownloadDatasetComponent
-          dpoAnnotatedResponses={3} // Keep DPO mocked for now
           requiredResponses={20}
           projectId={projectId} // Pass the projectId from the URL
         />

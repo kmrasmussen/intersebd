@@ -124,8 +124,7 @@ export function PageTabs({ projectId }: PageTabsProps) {
         <DownloadDatasetComponent
           title="Quick Dataset Download"
           description="Download JSONL datasets for fine-tuning based on your annotated responses."
-            dpoAnnotatedResponses={0}
-          requiredResponses={2}
+          requiredResponses={10}
           projectId={projectId}
         />
       </TabsContent>

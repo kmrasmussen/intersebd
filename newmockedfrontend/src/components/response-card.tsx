@@ -110,7 +110,7 @@ function JsonFormatter({ jsonString }: { jsonString: string }) {
         {copied ? <CheckCircle2 className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4 text-gray-500" />}
         <span className="sr-only">Copy JSON</span>
       </Button>
-      <pre className="bg-gray-50 p-3 rounded-md overflow-auto text-xs font-mono">
+      <pre className="bg-gray-50 p-3 rounded-md overflow-auto text-xs font-mono whitespace-pre-wrap break-words">
         <code dangerouslySetInnerHTML={{ __html: highlightJson(formattedJson) }} />
       </pre>
     </div>

@@ -10,13 +10,14 @@ import { AlertCircle } from "lucide-react"
 // Define props interface
 interface PageTabsProps {
   projectId: string;
+  onApiCallSuccess: () => void; // <-- Accept the callback prop
 }
 
 // Placeholder/Initial state for schema
 const initialSchemaValue = "";
 
-// Accept projectId as a prop
-export function PageTabs({ projectId }: PageTabsProps) {
+// Accept projectId and onApiCallSuccess as props
+export function PageTabs({ projectId, onApiCallSuccess }: PageTabsProps) {
   const [activeTab, setActiveTab] = useState<"api-call" | "schema-editor" | "finetune">("api-call")
 
   const [currentSchema, setCurrentSchema] = useState(initialSchemaValue);
@@ -98,6 +99,7 @@ export function PageTabs({ projectId }: PageTabsProps) {
           defaultPrompt="What is the capital of France?"
           title="Quick API Call"
           projectId={projectId}
+          onCallSuccess={onApiCallSuccess} // <-- Pass the callback down
         />
       </TabsContent>
 

@@ -1,16 +1,30 @@
-# intersebd
-Log, annotate and reward LLM API calls
+# intercebd
+this repo contains the code for intercebd.com
 
-OpenAI pioneered the Chat Completions API which is also what OpenRouter uses. New "protocols" are being proposed and intersebd might focus on them later, but for now intersebd is focusing on ChatCompletions.
+the purpose of intercebd is to be a webapp where users can log and annotate their LLM API calls, build datasets for finetuning and hopefully later also do actual finetuning
 
-Developers build apps where some service S takes an object of type A and returns an object of type B. These services might involve a ChatCompletions call R1 giving an LLM response R2 that is then processed in some way, leading to an object of type B. To make the service obey the business requirements, the developers can try to prompt the model, and build business logic in the service that makes the service process the LLM response R2 in the right way.
+# How to run
+There is an example .env file `.example.env` that should be renamed to `.env` and be filled with relevant fields.
 
-However, to get a robust service out code that uses an LLM, it is hard to go all the way using prompting. In the age of LLMs we are starting to have high expectations of the services - that they be intelligent, and it is hard for us to define and write down all the business requirements we might have from the service. Therefore we need benchmarking and training. Unlike normal tests, we might not be able to say exactly how we want an intelligent service to behave, but some of the things we know exactly what we need and for some things, like the title of a new document, we know roughly what we want. We want to specify what we expect from services and build benchmarks, that measure how well our services behave. We ultimately want to train the LLM being called, so that our service behaves better.
+The database is using psql neontech, you can make a free db there and put connection string 
 
-As more and more developers make intelligent services, they need tools that allow them to collect this kind of data, make annotations easier, and build training sets. intersebd is to be such a tool. 
-- Intercept: By intercepting the calls the service makes to the LLM provider like OpenAI, it gives developers an easy way to store all the LLM calls that the service is performing. By making a few lines of changes to the codebase the data can be automatically logged and viewed.
-- Notify: The LLM call might be part of a complex pipeline that leads to a behavior that can be judged by an annotator working for the business, an end-user that gives feedback, or programmatic functionality in the software solution somewhere downstream of the LLM call. With non-linked annotations, the annotator can be notified that the LLM call was made and perform. intersebd.notify(completion_id=llm_response.id, send_notification_to=user.user_id)
-- Annotate: Human annotaters can get notifications that are already linked to a specific LLM call and they can provide their feedback. Programmatic annotaters can make programmatic annotations based on either the LLM response id, if this is available, or some other information that links information available to the annotator to the LLM response id, though linked tagging
-- Linked Tagging: Many services that use LLMs might respond with some id. Developers do not need to change the outwards behavior of their service, as long as they can link identifying information. Often a single link might be sufficient: intersebd.link(upstream_tag=response.id, downstream_tag=service_response.id), but if the pipeline is more complex, at a later point in the code we might do intersebd.link(upstream_tag=service_response.id, downstream_tag=user_selection.id). It is even possible to add extra data intersebd.link(upstream_tag=service_response.id, downstream_tag=user_selection.id, metadata=user_selection.title)
-- Programmatic annotation: To annotate intersebd.annotate(annotation_key=llm_response.id, content=1) or with JSON data intersebd.annotate(annotation_key=llm_response.id, numeric_reward=1, data=annotation_data). 
-- Enabled mode: Put the intersebd code inside flags: if IS_TEST_ENV: intersebd.annotate(...) or enable intersebd.enabled = IS_TEST_ENV to avoid any uncesseary computations.
+The backend is dockerized, do
+```
+docker compose up
+```
+
+To run the frontend do
+```
+cd newmockedfrontend
+npm run dev
+```
+
+The backend is in Python with FastAPI and SQLAlchemy and the swagger is localhost:9003/docs 
+
+The frontend is on localhost:5173
+
+If using neontech the database admin is one https://console.neon.tech/app/
+
+# Major todos
+- There is a lot with login - it creates a guest user when a guest arrives which is okay but it should be easy to logout and just not be logged in at all and have the possibility of logging in with Google.
+- Make it possible to push a sft dataset to huggingface with the right conversation format, proof of concept should be able to substitute in the new dataset name instead of smoltalk everyday conversations dataset and start running finetune of qwen without problems

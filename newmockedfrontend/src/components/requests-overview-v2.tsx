@@ -92,7 +92,7 @@ function StatusIndicator({ status }: { status: RequestStatus }) {
   )
 }
 
-export function RequestsOverviewV2({ projectId }: { projectId: string }) {
+export function RequestsOverviewV2({ projectId, refreshTrigger }: { projectId: string; refreshTrigger: number }) {
   const [requests, setRequests] = useState<MockRequest[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -147,7 +147,8 @@ export function RequestsOverviewV2({ projectId }: { projectId: string }) {
     };
 
     fetchRequests();
-  }, [projectId, API_BASE_URL, GUEST_USER_ID_HEADER]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, API_BASE_URL, GUEST_USER_ID_HEADER, refreshTrigger]);
 
   const fetchRequestDetailsAndSchema = useCallback(async (reqId: string) => {
     if (!projectId) return

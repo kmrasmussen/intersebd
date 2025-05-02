@@ -13,7 +13,7 @@ import {
     DialogFooter,
     DialogClose,
 } from "@/components/ui/dialog"
-import { Copy, CheckCircle2, ChevronUp, ChevronDown, Maximize2, Minimize2, AlertCircle, Loader2 } from "lucide-react"
+import { Copy, CheckCircle2, ChevronUp, ChevronDown, Maximize2, Minimize2, AlertCircle, Loader2, Info } from "lucide-react"
 
 interface KeySchema {
   id: string
@@ -28,6 +28,7 @@ interface CodeExampleProps {
   defaultPrompt?: string
   className?: string
   title?: string
+  onCallSuccess?: () => void
 }
 
 export function CodeExample({
@@ -35,6 +36,7 @@ export function CodeExample({
   defaultPrompt = "What is 2+2?",
   className = "",
   title = "Code Example",
+  onCallSuccess,
 }: CodeExampleProps) {
   const [language, setLanguage] = useState<"curl" | "python" | "javascript">("python")
   const [prompt, setPrompt] = useState(defaultPrompt)
@@ -50,6 +52,7 @@ export function CodeExample({
   const [apiResponse, setApiResponse] = useState<any>(null)
   const [apiError, setApiError] = useState<string | null>(null)
   const [isResponseDialogOpen, setIsResponseDialogOpen] = useState(false)
+  const [lastCallWasSuccess, setLastCallWasSuccess] = useState(false)
 
   const endpoint = `${import.meta.env.VITE_API_BASE_URL || ""}/v1/chat/completions`
 
@@ -101,6 +104,7 @@ export function CodeExample({
     setIsCallingApi(true)
     setApiResponse(null)
     setApiError(null)
+    setLastCallWasSuccess(false)
     setIsResponseDialogOpen(true)
 
     try {
@@ -131,9 +135,11 @@ export function CodeExample({
       }
 
       setApiResponse(responseData)
+      setLastCallWasSuccess(true)
     } catch (error: any) {
       console.error("API Call failed:", error)
       setApiError(error.message || "An unexpected error occurred.")
+      setLastCallWasSuccess(false)
     } finally {
       setIsCallingApi(false)
     }
@@ -228,6 +234,19 @@ print(completion)`
         <CardContent className="pt-4 text-red-600">{keyError}</CardContent>
       </Card>
     )
+  }
+
+  const handleDialogClose = (open: boolean) => {
+    console.log(`[CodeExample] Dialog closing. Open state: ${open}, Last call success: ${lastCallWasSuccess}`);
+    setIsResponseDialogOpen(open)
+    if (!open && lastCallWasSuccess) {
+      console.log("[CodeExample] Dialog closed after success, calling onCallSuccess...");
+      onCallSuccess?.()
+      setLastCallWasSuccess(false)
+    } else if (!open) {
+      console.log("[CodeExample] Dialog closed (not after success or already handled), resetting success flag.");
+      setLastCallWasSuccess(false)
+    }
   }
 
   return (
@@ -327,7 +346,7 @@ print(completion)`
         )}
       </Card>
 
-      <Dialog open={isResponseDialogOpen} onOpenChange={setIsResponseDialogOpen}>
+      <Dialog open={isResponseDialogOpen} onOpenChange={handleDialogClose}>
         <DialogContent className="sm:max-w-[600px]">
           <DialogHeader>
             <DialogTitle>API Call Result</DialogTitle>
@@ -349,6 +368,14 @@ print(completion)`
             )}
             {apiResponse && (
               <div>
+                {lastCallWasSuccess && !isCallingApi && (
+                  <div className="mb-3 flex items-center rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-700">
+                    <Info className="mr-2 h-4 w-4 flex-shrink-0" />
+                    <span>
+                      Success! This request should now appear in the list below after closing this dialog.
+                    </span>
+                  </div>
+                )}
                 <p className="font-semibold">Response:</p>
                 <pre className="mt-1 whitespace-pre-wrap text-sm">
                   {JSON.stringify(apiResponse, null, 2)}

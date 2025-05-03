@@ -5,6 +5,11 @@ import uuid
 import logging
 import json
 from datetime import datetime, timezone
+import huggingface_hub
+import datasets
+from datasets import Dataset
+import uuid
+from fastapi import Query
 
 # --- DB and Auth Imports ---
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -125,9 +130,13 @@ class SftMessageSchema(BaseModel):
 class SftConversationSchema(BaseModel):
     """Represents a full conversation, typically a list of messages."""
     messages: List[SftMessageSchema] = Field(..., description="A list of messages forming the conversation")
-
     class Config:
         from_attributes = True
+
+# ...existing Pydantic models...
+
+
+# ...rest of the Pydantic models...
 # --- End NEW Schemas ---
 
 # --- Helper Functions ---
@@ -317,6 +326,7 @@ async def _generate_project_sft_data(
     # --- Process Requests and Build Dataset ---
     for req in requests:
         # 1. Parse Base Messages
+        req_id_str = str(req.id)
         base_messages_data = req.messages
         if not isinstance(base_messages_data, list):
              logger.warning(f"Request {req.id} messages field is not a list, skipping for SFT.")
@@ -337,7 +347,8 @@ async def _generate_project_sft_data(
             if is_sft_example(target, active_schema=active_schema_content, threshold=sft_threshold):
                 assistant_content = req.completion_response.choice_content or ""
                 assistant_message = SftMessageSchema(role="assistant", content=assistant_content)
-                conversation = SftConversationSchema(messages=base_messages + [assistant_message])
+                conversation = SftConversationSchema(
+                    messages=base_messages + [assistant_message])
                 sft_dataset.append(conversation)
                 logger.debug(f"Added SFT entry from request {req.id} - main response {req.completion_response.id}")
 
@@ -529,6 +540,138 @@ async def get_requests_summary(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve request summaries due to an internal error."
         )
+
+# ... after download_sft_dataset_jsonl endpoint ...
+# ... existing imports ...
+import os
+# ... existing code ...
+
+
+class PushToHubResponse(BaseModel):
+    success: bool
+    message: str
+    dataset_path: Optional[str] = None
+
+class PushToHubRequest(BaseModel):
+    hf_username : Optional[str] = None
+    hf_write_access_token : Optional[str] = None
+    do_push : Optional[bool] = False
+
+@router.post(
+    "/{project_id}/push-sft-dataset-to-hub",
+    response_model=PushToHubResponse,
+    summary="Generate SFT dataset for the project and push it to Hugging Face Hub." # Updated summary
+)
+async def push_sft_dataset_to_hub(
+    project_id: uuid.UUID = Path(..., description="The UUID of the project"),
+    request_body: PushToHubRequest = Body(...),
+    sft_threshold: float = Query(0.75, description="The minimum average reward threshold for SFT examples."),
+    db: AsyncSession = Depends(get_db),
+    membership: models.ProjectMembership = Depends(verify_project_membership),
+):
+    """
+    Generates the SFT dataset based on project annotations and criteria,
+    formats it, and optionally pushes it to a Hugging Face Hub repository.
+    """
+    logger.info(f"Request to generate and potentially push SFT dataset for project {project_id} by user {membership.user_id}. do_push={request_body.do_push}, threshold={sft_threshold}")
+
+    # --- Hub Configuration (Consider making more dynamic/secure) ---
+    # Example: Get token from environment variable
+    hf_write_access_token = request_body.hf_write_access_token #"os.getenv("HF_WRITE_TOKEN") # Use environment variable
+    hf_username = request_body.hf_username # Optional: Get username from env too
+    # Make dataset name unique and informative
+    timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    hf_dataset_name = f"intercebd-sft-proj-{project_id}-{timestamp_str}"
+    hf_dataset_path = f"{hf_username}/{hf_dataset_name}"
+    hf_dataset_private = False # Or make this configurable
+    # --- End Hub Configuration ---
+
+    try:
+        # --- Generate Actual SFT Data ---
+        sft_data: List[SftConversationSchema] = await _generate_project_sft_data(
+            project_id=project_id,
+            db=db,
+            sft_threshold=sft_threshold
+        )
+
+        if not sft_data:
+            logger.info(f"No SFT data generated for project {project_id} with threshold {sft_threshold}. Nothing to push.")
+            return PushToHubResponse(
+                success=False, # Indicate failure due to no data
+                message=f"No SFT examples found for project {project_id} meeting the threshold criteria. No dataset pushed.",
+                dataset_path=None
+            )
+        # --- End Generate Actual SFT Data ---
+
+        # --- Create Hugging Face Dataset ---
+        # Convert Pydantic models to dictionaries
+        data_list = [conv.model_dump() for conv in sft_data]
+
+        hf_dataset = Dataset.from_list(data_list)
+        # Removed the add_uuid mapping as the conversation structure is the data
+
+
+        def add_uuid(example):
+            return {"id": str(uuid.uuid4())}
+
+        # Apply the function to add the 'id' column
+        hf_dataset = hf_dataset.map(add_uuid)
+
+        logger.info(f"Prepared dataset with {len(hf_dataset)} SFT entries for {hf_dataset_path}")
+        # --- End Create Hugging Face Dataset ---
+
+        if request_body.do_push:
+            print('SFT-TO-HUB inside do-push')
+            if not hf_write_access_token:
+                 logger.error("Hugging Face write token (HF_WRITE_TOKEN environment variable) is not configured. Cannot push.")
+                 # Avoid exposing token details in the error message
+                 raise HTTPException(
+                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                     detail="Hugging Face Hub token not configured on the server."
+                 )
+
+            logger.info(f"Attempting to push dataset to Hugging Face Hub: {hf_dataset_path}")
+            try:
+                # Ensure the user is logged in if using default token inference
+                # huggingface_hub.login(token=hf_write_access_token) # Explicit login might be needed depending on environment
+
+                hf_dataset.push_to_hub(
+                    repo_id=hf_dataset_path,
+                    token=hf_write_access_token, # Pass the token explicitly
+                    private=hf_dataset_private
+                )
+                logger.info(f"Successfully pushed dataset to {hf_dataset_path}")
+                return PushToHubResponse(
+                    success=True,
+                    message=f"Successfully generated and pushed {len(hf_dataset)} SFT examples to {hf_dataset_path}",
+                    dataset_path=hf_dataset_path
+                )
+            except Exception as e:
+                logger.exception(f"Error pushing dataset to Hugging Face Hub ({hf_dataset_path}): {e}", exc_info=True)
+                # Provide a more generic error to the client
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to push dataset to Hugging Face Hub. Check server logs for details."
+                )
+        else:
+            logger.info("Dataset prepared but not pushed (do_push=False).")
+            return PushToHubResponse(
+                success=True, # Success in preparing the data
+                message=f"Dataset with {len(hf_dataset)} SFT examples prepared successfully but not pushed to Hub.",
+                dataset_path=hf_dataset_path # Return the intended path
+            )
+
+    except HTTPException as http_exc:
+        # Re-raise HTTPExceptions directly
+        raise http_exc
+    except Exception as e:
+        logger.exception(f"Error preparing or handling SFT dataset for push (project {project_id}): {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An internal error occurred while preparing the SFT dataset. Check server logs."
+        )
+
+# ... rest of the file ...# ... rest of the file ...
 
 @router.get("/{project_id}/requests/{request_id}", response_model=MockRequestDetail)
 async def get_request_details(

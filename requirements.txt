@@ -11,3 +11,5 @@ alembic
 authlib
 itsdangerous
 jsonschema>=4.0.0
+datasets==3.0.0
+huggingface-hub==0.30.2

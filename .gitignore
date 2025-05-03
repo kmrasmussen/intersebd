@@ -9,3 +9,4 @@ gitignored/
 
 # Frontend build output
 newmockedfrontend/dist/
+prototypingscripts/

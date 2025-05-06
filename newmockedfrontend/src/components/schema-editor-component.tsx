@@ -84,6 +84,7 @@ export function SchemaEditorComponent({
         method: "POST",
         headers: headers,
         body: JSON.stringify({ schema_content: parsedSchemaContent }),
+        credentials: "include",
       })
 
       if (!response.ok) {

@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import { Link, useLocation, useParams } from "react-router-dom";
-import { Database, LogOut, ChevronLeft, ChevronRight, FileJson, Phone, ListFilter, LogIn } from "lucide-react"
+import { Database, LogOut, ChevronLeft, ChevronRight, ListFilter, LogIn } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 // *** IMPORT SHARED TYPES ***
 import { LoginStatusResponse } from "../types"; // Adjust path if needed
@@ -25,7 +25,7 @@ export function Sidebar({ userStatus }: SidebarProps) {
     const cleanPath = path.startsWith("/") ? path : `/${path}`
     return `/${projectId}${cleanPath === "/" ? "" : cleanPath}`
   }
-
+/*
   const isActive = (path: string) => {
     const fullPath = getProjectPath(path);
     if (path === "/") {
@@ -33,6 +33,7 @@ export function Sidebar({ userStatus }: SidebarProps) {
     }
     return pathname.startsWith(fullPath);
   }
+    */
 
   const handleGoogleLogin = () => {
     window.location.href = `${API_BASE_URL}/auth/login/google`;

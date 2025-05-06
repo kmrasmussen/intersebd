@@ -78,7 +78,7 @@ export function RequestDetails({ projectId, requestId }: RequestDetailsProps) {
 
       console.log(`RequestDetails: Fetching from ${apiUrl}`);
       try {
-        const response = await fetch(apiUrl, { headers });
+        const response = await fetch(apiUrl, { headers, credentials: "include" });
 
         if (!response.ok) {
           let errorDetail = `HTTP error! status: ${response.status}`;

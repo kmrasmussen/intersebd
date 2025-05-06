@@ -133,10 +133,26 @@ class SftConversationSchema(BaseModel):
     class Config:
         from_attributes = True
 
-# ...existing Pydantic models...
+class DpoInputSchema(BaseModel):
+    messages: List[SftMessageSchema] # Reusing SftMessageSchema for input messages
+    tools: List[Any] = Field(default_factory=list, description="List of tools, if any.")
+    parallel_tool_calls: bool = Field(True, description="Whether parallel tool calls are enabled.")
 
+class DpoAssistantMessageSchema(BaseModel):
+    role: Literal["assistant"] = "assistant"
+    content: str
 
-# ...rest of the Pydantic models...
+    class Config:
+        from_attributes = True
+
+class DpoExampleSchema(BaseModel):
+    input: DpoInputSchema
+    preferred_output: List[DpoAssistantMessageSchema]
+    non_preferred_output: List[DpoAssistantMessageSchema]
+
+    class Config:
+        from_attributes = True
+
 # --- End NEW Schemas ---
 
 # --- Helper Functions ---
@@ -366,7 +382,260 @@ async def _generate_project_sft_data(
     logger.info(f"Generated {len(sft_dataset)} SFT conversation entries for project {project_id}.")
     return sft_dataset
 
-# --- Router ---
+async def _generate_project_dpo_data(
+    project_id: uuid.UUID,
+    db: AsyncSession,
+    sft_threshold: float,
+    dpo_negative_threshold: float
+) -> List[DpoExampleSchema]:
+    """
+    Generates a list of DPO example data for a given project.
+    Each example consists of an input, a preferred response (SFT),
+    and a non-preferred response (DPO negative).
+    """
+    logger.info(f"Generating DPO dataset for project {project_id} with SFT threshold {sft_threshold} and DPO negative threshold {dpo_negative_threshold}")
+    dpo_dataset: List[DpoExampleSchema] = []
+
+    # --- Fetch Active Schema Once ---
+    active_schema_content: Optional[Dict[str, Any]] = None
+    try:
+        stmt_schema = (
+            select(models.ProjectJsonSchema)
+            .where(models.ProjectJsonSchema.project_id == project_id)
+            .where(models.ProjectJsonSchema.is_active == True)
+            .order_by(models.ProjectJsonSchema.created_at.desc())
+        )
+        result_schema = await db.execute(stmt_schema)
+        active_schema_obj = result_schema.scalars().first()
+        if active_schema_obj:
+            active_schema_content = active_schema_obj.schema_content
+            logger.debug(f"Found active schema {active_schema_obj.id} for DPO dataset generation.")
+        else:
+            logger.debug(f"No active schema found for project {project_id}. DPO checks will only use reward.")
+    except Exception as schema_exc:
+        logger.error(f"Error fetching active schema for DPO dataset (project {project_id}): {schema_exc}", exc_info=True)
+    # --- End Fetch Active Schema ---
+
+    # --- Query to fetch requests and necessary related data ---
+    stmt_requests = (
+        select(models.CompletionsRequest)
+        .where(models.CompletionsRequest.project_id == project_id)
+        .options(
+            selectinload(models.CompletionsRequest.completion_response)
+            .selectinload(models.CompletionResponse.annotation_target)
+            .options(
+                selectinload(models.AnnotationTarget.annotations),
+                joinedload(models.AnnotationTarget.completion_response, innerjoin=False),
+                joinedload(models.AnnotationTarget.completion_alternative, innerjoin=False)
+            ),
+            selectinload(models.CompletionsRequest.alternatives)
+            .selectinload(models.CompletionAlternative.annotation_target)
+            .options(
+                selectinload(models.AnnotationTarget.annotations),
+                joinedload(models.AnnotationTarget.completion_response, innerjoin=False),
+                joinedload(models.AnnotationTarget.completion_alternative, innerjoin=False)
+            )
+        )
+        .order_by(models.CompletionsRequest.id) # Consistent ordering
+    )
+    # --- End Query ---
+
+    result = await db.execute(stmt_requests)
+    requests = result.scalars().unique().all()
+    logger.debug(f"Fetched {len(requests)} requests for DPO dataset generation.")
+
+    for req in requests:
+        req_id_str = str(req.id)
+        # Store tuples of (AnnotationTarget, content_string)
+        sft_targets_with_content: List[tuple[models.AnnotationTarget, str]] = []
+        dpo_negative_targets_with_content: List[tuple[models.AnnotationTarget, str]] = []
+
+        all_targets_to_process: List[models.AnnotationTarget] = []
+        if req.completion_response and req.completion_response.annotation_target:
+            all_targets_to_process.append(req.completion_response.annotation_target)
+        for alt in req.alternatives:
+            if alt.annotation_target:
+                all_targets_to_process.append(alt.annotation_target)
+
+        for target in all_targets_to_process:
+            content: Optional[str] = None
+            source_id_for_log: str = f"target {target.id}"
+            if target.completion_response:
+                content = target.completion_response.choice_content
+                source_id_for_log = f"response {target.completion_response.id}"
+            elif target.completion_alternative:
+                content = target.completion_alternative.alternative_content
+                source_id_for_log = f"alternative {target.completion_alternative.id}"
+
+            if content is None:
+                logger.warning(f"Target {source_id_for_log} for request {req_id_str} has no associated content. Skipping for DPO.")
+                continue
+
+            if is_sft_example(target, active_schema=active_schema_content, threshold=sft_threshold):
+                sft_targets_with_content.append((target, content))
+            
+            if is_dpo_negative_example(target, active_schema=active_schema_content, threshold=dpo_negative_threshold):
+                dpo_negative_targets_with_content.append((target, content))
+
+        if sft_targets_with_content and dpo_negative_targets_with_content:
+            base_messages_data = req.messages
+            if not isinstance(base_messages_data, list):
+                 logger.warning(f"Request {req_id_str} messages field is not a list, skipping for DPO.")
+                 continue
+            try:
+                input_messages = [
+                    SftMessageSchema(role=msg.get("role"), content=msg.get("content"))
+                    for msg in base_messages_data
+                    if isinstance(msg, dict) and 'role' in msg and 'content' in msg
+                ]
+            except Exception as e:
+                logger.warning(f"Failed to parse base messages for request {req_id_str}: {e}, skipping for DPO.")
+                continue
+            
+            dpo_input = DpoInputSchema(messages=input_messages)
+
+            for sft_target, preferred_content_str in sft_targets_with_content:
+                preferred_msg = DpoAssistantMessageSchema(content=preferred_content_str)
+                for neg_target, non_preferred_content_str in dpo_negative_targets_with_content:
+                    if sft_target.id == neg_target.id: # Ensure preferred and non-preferred are from different targets
+                        continue
+                    
+                    non_preferred_msg = DpoAssistantMessageSchema(content=non_preferred_content_str)
+                    
+                    dpo_example = DpoExampleSchema(
+                        input=dpo_input,
+                        preferred_output=[preferred_msg],
+                        non_preferred_output=[non_preferred_msg]
+                    )
+                    dpo_dataset.append(dpo_example)
+                    logger.debug(f"Added DPO entry for request {req_id_str}: preferred target {sft_target.id}, non-preferred target {neg_target.id}")
+    
+    logger.info(f"Generated {len(dpo_dataset)} DPO examples for project {project_id}.")
+    return dpo_dataset
+
+async def _generate_project_dpo_data_for_hub(
+    project_id: uuid.UUID,
+    db: AsyncSession,
+    sft_threshold: float,
+    dpo_negative_threshold: float
+) -> List[Dict[str, Any]]:
+    """
+    Generates DPO data formatted for Hugging Face Hub upload.
+    Each item contains 'chosen' and 'rejected' conversations, and their scores.
+    """
+    logger.info(f"Generating DPO data for Hub for project {project_id} (SFT >={sft_threshold}, DPO <{dpo_negative_threshold})")
+    hub_dpo_dataset: List[Dict[str, Any]] = []
+
+    active_schema_content: Optional[Dict[str, Any]] = None
+    try:
+        stmt_schema = (
+            select(models.ProjectJsonSchema)
+            .where(models.ProjectJsonSchema.project_id == project_id)
+            .where(models.ProjectJsonSchema.is_active == True)
+            .order_by(models.ProjectJsonSchema.created_at.desc())
+        )
+        result_schema = await db.execute(stmt_schema)
+        active_schema_obj = result_schema.scalars().first()
+        if active_schema_obj:
+            active_schema_content = active_schema_obj.schema_content
+    except Exception as schema_exc:
+        logger.error(f"Error fetching active schema for DPO Hub dataset (project {project_id}): {schema_exc}", exc_info=True)
+
+    stmt_requests = (
+        select(models.CompletionsRequest)
+        .where(models.CompletionsRequest.project_id == project_id)
+        .options(
+            selectinload(models.CompletionsRequest.completion_response)
+            .selectinload(models.CompletionResponse.annotation_target)
+            .options(
+                selectinload(models.AnnotationTarget.annotations),
+                joinedload(models.AnnotationTarget.completion_response, innerjoin=False),
+                joinedload(models.AnnotationTarget.completion_alternative, innerjoin=False)
+            ),
+            selectinload(models.CompletionsRequest.alternatives)
+            .selectinload(models.CompletionAlternative.annotation_target)
+            .options(
+                selectinload(models.AnnotationTarget.annotations),
+                joinedload(models.AnnotationTarget.completion_response, innerjoin=False),
+                joinedload(models.AnnotationTarget.completion_alternative, innerjoin=False)
+            )
+        )
+        .order_by(models.CompletionsRequest.id)
+    )
+    result = await db.execute(stmt_requests)
+    requests = result.scalars().unique().all()
+    logger.debug(f"Fetched {len(requests)} requests for DPO Hub dataset generation.")
+
+    for req in requests:
+        req_id_str = str(req.id)
+        
+        base_messages_data = req.messages
+        if not isinstance(base_messages_data, list):
+            logger.warning(f"Request {req_id_str} messages field is not a list, skipping for DPO Hub.")
+            continue
+        try:
+            # Convert to SftMessageSchema dicts for consistency with HF format
+            base_user_messages = [
+                SftMessageSchema(role=msg.get("role"), content=msg.get("content")).model_dump()
+                for msg in base_messages_data
+                if isinstance(msg, dict) and 'role' in msg and 'content' in msg
+            ]
+        except Exception as e:
+            logger.warning(f"Failed to parse base messages for request {req_id_str} for DPO Hub: {e}, skipping.")
+            continue
+
+        sft_targets_info: List[Tuple[models.AnnotationTarget, str, float]] = [] # target, content, avg_reward
+        dpo_neg_targets_info: List[Tuple[models.AnnotationTarget, str, float]] = [] # target, content, avg_reward
+
+        all_targets_to_process: List[models.AnnotationTarget] = []
+        if req.completion_response and req.completion_response.annotation_target:
+            all_targets_to_process.append(req.completion_response.annotation_target)
+        for alt in req.alternatives:
+            if alt.annotation_target:
+                all_targets_to_process.append(alt.annotation_target)
+
+        for target in all_targets_to_process:
+            content: Optional[str] = None
+            if target.completion_response: content = target.completion_response.choice_content
+            elif target.completion_alternative: content = target.completion_alternative.alternative_content
+
+            if not content or not target.annotations: continue
+
+            total_reward = sum(ann.reward for ann in target.annotations if ann.reward is not None)
+            num_annotations_with_reward = sum(1 for ann in target.annotations if ann.reward is not None)
+            if num_annotations_with_reward == 0: continue
+            average_reward = total_reward / len(target.annotations)
+
+
+            if is_sft_example(target, active_schema=active_schema_content, threshold=sft_threshold):
+                sft_targets_info.append((target, content, average_reward))
+            
+            if is_dpo_negative_example(target, active_schema=active_schema_content, threshold=dpo_negative_threshold):
+                dpo_neg_targets_info.append((target, content, average_reward))
+
+        if sft_targets_info and dpo_neg_targets_info:
+            for sft_target, preferred_content, sft_score in sft_targets_info:
+                chosen_assistant_msg = SftMessageSchema(role="assistant", content=preferred_content).model_dump()
+                chosen_conversation = base_user_messages + [chosen_assistant_msg]
+
+                for neg_target, non_preferred_content, dpo_neg_score in dpo_neg_targets_info:
+                    if sft_target.id == neg_target.id: # Cannot be the same target
+                        continue
+                    
+                    rejected_assistant_msg = SftMessageSchema(role="assistant", content=non_preferred_content).model_dump()
+                    rejected_conversation = base_user_messages + [rejected_assistant_msg]
+                    
+                    hub_dpo_dataset.append({
+                        "chosen": chosen_conversation,
+                        "rejected": rejected_conversation,
+                        "score_chosen": sft_score,
+                        "score_rejected": dpo_neg_score,
+                    })
+                    logger.debug(f"Added DPO Hub entry for req {req_id_str}: chosen target {sft_target.id}, rejected target {neg_target.id}")
+    
+    logger.info(f"Generated {len(hub_dpo_dataset)} DPO examples for Hub for project {project_id}.")
+    return hub_dpo_dataset
+
 
 router = APIRouter(
     prefix="/mock-next",
@@ -671,6 +940,127 @@ async def push_sft_dataset_to_hub(
             detail=f"An internal error occurred while preparing the SFT dataset. Check server logs."
         )
 
+@router.post(
+    "/{project_id}/push-dpo-dataset-to-hub",
+    response_model=PushToHubResponse,
+    summary="Generate DPO dataset for the project and push it to Hugging Face Hub."
+)
+async def push_dpo_dataset_to_hub(
+    project_id: uuid.UUID = Path(..., description="The UUID of the project"),
+    request_body: PushToHubRequest = Body(...),
+    sft_threshold: float = Query(0.75, description="Minimum average reward for SFT examples (chosen)."),
+    dpo_negative_threshold: float = Query(0.25, description="Maximum average reward for DPO negative examples (rejected)."),
+    db: AsyncSession = Depends(get_db),
+    membership: models.ProjectMembership = Depends(verify_project_membership),
+):
+    """
+    Generates the DPO dataset based on project annotations and criteria,
+    formats it for Hugging Face (chosen/rejected pairs), and optionally pushes it
+    to a Hugging Face Hub repository.
+    """
+    logger.info(f"Request to generate and potentially push DPO dataset for project {project_id} by user {membership.user_id}. do_push={request_body.do_push}")
+
+    hf_write_access_token = request_body.hf_write_access_token
+    hf_username = request_body.hf_username
+    timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    hf_dataset_name = f"intercebd-dpo-proj-{project_id}-{timestamp_str}" # DPO specific name
+    
+    if not hf_username: # Default to a generic username if not provided, or handle as error
+        # Fallback or error if username is critical for your setup
+        # For this example, let's assume it might be optional or derived elsewhere if not provided
+        # but for a real application, you'd likely require it or have a default.
+        # hf_username = "default-hf-user" # Placeholder if you have a default org/user
+        logger.warning("Hugging Face username not provided in request body. Dataset path might be incomplete if pushed.")
+        # If hf_username is strictly required for push_to_hub:
+        if request_body.do_push:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Hugging Face username is required to push the dataset."
+            )
+        hf_dataset_path = hf_dataset_name # Path without username if not provided
+    else:
+        hf_dataset_path = f"{hf_username}/{hf_dataset_name}"
+
+    hf_dataset_private = False 
+
+    try:
+        dpo_data_for_hub: List[Dict[str, Any]] = await _generate_project_dpo_data_for_hub(
+            project_id=project_id,
+            db=db,
+            sft_threshold=sft_threshold,
+            dpo_negative_threshold=dpo_negative_threshold
+        )
+
+        if not dpo_data_for_hub:
+            logger.info(f"No DPO data generated for Hub for project {project_id}. Nothing to push.")
+            return PushToHubResponse(
+                success=False,
+                message=f"No DPO examples found for project {project_id} meeting the criteria. No dataset pushed.",
+                dataset_path=None
+            )
+
+        # Create Hugging Face Dataset from the list of dicts
+        hf_dataset = Dataset.from_list(dpo_data_for_hub)
+
+        # Add UUIDs if needed (as per your SFT example)
+        def add_uuid(example):
+            return {"id": str(uuid.uuid4())}
+        hf_dataset = hf_dataset.map(add_uuid)
+
+        logger.info(f"Prepared DPO dataset with {len(hf_dataset)} entries for {hf_dataset_path}")
+
+        if request_body.do_push:
+            if not hf_write_access_token:
+                 logger.error("Hugging Face write token not provided. Cannot push DPO dataset.")
+                 raise HTTPException(
+                     status_code=status.HTTP_400_BAD_REQUEST, # Or 500 if server misconfiguration
+                     detail="Hugging Face Hub write access token not provided in the request."
+                 )
+            if not hf_username: # Re-check, as path construction depends on it for typical HF repos
+                logger.error("Hugging Face username not provided. Cannot push DPO dataset to a user/org repository.")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Hugging Face username is required to push the dataset to a user/organization repository."
+                )
+
+
+            logger.info(f"Attempting to push DPO dataset to Hugging Face Hub: {hf_dataset_path}")
+            try:
+                hf_dataset.push_to_hub(
+                    repo_id=hf_dataset_path,
+                    token=hf_write_access_token,
+                    private=hf_dataset_private
+                )
+                logger.info(f"Successfully pushed DPO dataset to {hf_dataset_path}")
+                return PushToHubResponse(
+                    success=True,
+                    message=f"Successfully generated and pushed {len(hf_dataset)} DPO examples to {hf_dataset_path}",
+                    dataset_path=hf_dataset_path
+                )
+            except Exception as e:
+                logger.exception(f"Error pushing DPO dataset to Hugging Face Hub ({hf_dataset_path}): {e}", exc_info=True)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to push DPO dataset to Hugging Face Hub. Check server logs for details."
+                )
+        else:
+            logger.info("DPO dataset prepared but not pushed (do_push=False).")
+            return PushToHubResponse(
+                success=True,
+                message=f"DPO dataset with {len(hf_dataset)} examples prepared successfully but not pushed to Hub.",
+                dataset_path=hf_dataset_path # Return the intended path
+            )
+
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        logger.exception(f"Error preparing or handling DPO dataset for push (project {project_id}): {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An internal error occurred while preparing the DPO dataset. Check server logs."
+        )
+
+# ... rest of the file ...
 # ... rest of the file ...# ... rest of the file ...
 
 @router.get("/{project_id}/requests/{request_id}", response_model=MockRequestDetail)
@@ -1385,10 +1775,6 @@ def is_dpo_ready(
     logger.debug(f"DPO Ready Check for Request {request.id}: Finished checking targets. Found SFT: {found_sft}, Found DPO Negative: {found_dpo_negative}. Result: False.")
     return False
 
-# ... rest of the code ...
-
-# ... rest of the code ...
-
 @router.get(
     "/{project_id}/annotation-targets/{annotation_target_id}/is-sft",
     response_model=bool,
@@ -1495,8 +1881,6 @@ async def check_if_sft_example(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to determine SFT status due to an internal error."
         )
-    
-# ... after check_if_sft_example endpoint ...
 
 @router.get(
     "/{project_id}/annotation-targets/{annotation_target_id}/is-dpo-negative",
@@ -1701,9 +2085,6 @@ async def get_dpo_ready_count(
             detail="Failed to calculate DPO ready count due to an internal error."
         )
 
-# ... after get_dpo_ready_count endpoint ...
-# ... download_sft_dataset_jsonl endpoint ...
-
 @router.get(
     "/{project_id}/sft-request-count",
     response_model=SftRequestCountResponse,
@@ -1850,3 +2231,58 @@ async def download_sft_dataset_jsonl(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to generate SFT dataset due to an internal error."
         )
+
+@router.get(
+    "/{project_id}/dpo-dataset.jsonl",
+    summary="Generate a DPO dataset (JSON Lines) for the project",
+    response_class=Response 
+)
+async def download_dpo_dataset_jsonl(
+    project_id: uuid.UUID = Path(..., description="The UUID of the project"),
+    sft_threshold: float = Query(0.75, description="Minimum average reward for SFT examples (preferred)."),
+    dpo_negative_threshold: float = Query(0.25, description="Maximum average reward for DPO negative examples (non-preferred)."),
+    db: AsyncSession = Depends(get_db),
+    membership: models.ProjectMembership = Depends(verify_project_membership),
+):
+    """
+    Generates a dataset suitable for Direct Preference Optimization (DPO) in JSON Lines format.
+
+    Each line in the response body is a JSON object representing one DPO example,
+    containing an input, a preferred assistant response, and a non-preferred assistant response.
+    These are derived from requests that have at least one SFT-qualifying response and
+    at least one DPO-negative-qualifying response associated with them.
+    """
+    logger.info(f"Generating DPO dataset (JSONL) for project {project_id} by user {membership.user_id}")
+
+    try:
+        dpo_data: List[DpoExampleSchema] = await _generate_project_dpo_data(
+            project_id=project_id,
+            db=db,
+            sft_threshold=sft_threshold,
+            dpo_negative_threshold=dpo_negative_threshold
+        )
+
+        if not dpo_data:
+            logger.info(f"No DPO data generated for project {project_id} with current thresholds. Returning empty response.")
+            return Response(content="", media_type="application/jsonl", status_code=status.HTTP_200_OK)
+
+        # Convert list of Pydantic objects to JSONL string
+        jsonl_content = "\n".join([example.model_dump_json(exclude_none=True) for example in dpo_data])
+        # Add a final newline character, common for JSONL files
+        jsonl_content += "\n"
+
+        # Set headers for file download
+        headers = {
+            'Content-Disposition': f'attachment; filename="dpo_dataset_{project_id}.jsonl"'
+        }
+
+        return Response(content=jsonl_content, media_type="application/jsonl", headers=headers)
+
+    except Exception as e:
+        logger.exception(f"Error generating DPO JSONL dataset for project {project_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate DPO dataset due to an internal error."
+        )
+
+# ... rest of the file ...

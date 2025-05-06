@@ -58,6 +58,7 @@ export function NewAlternativeForm({ projectId, requestId, onAlternativeAdded }:
         method: 'POST',
         headers: headers,
         body: JSON.stringify({ alternative_content: newAlternativeContent }),
+        credentials: 'include',
       });
 
       if (!response.ok) {

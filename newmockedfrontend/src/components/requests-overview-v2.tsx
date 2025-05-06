@@ -171,8 +171,8 @@ export function RequestsOverviewV2({ projectId, refreshTrigger }: { projectId: s
 
     try {
       const [detailsResponse, schemaResponse] = await Promise.all([
-        fetch(detailsUrl, { headers }),
-        fetch(schemaUrl, { headers })
+        fetch(detailsUrl, { headers, credentials: "include" }),
+        fetch(schemaUrl, { headers, credentials: "include" })
       ])
 
       if (!detailsResponse.ok) {

@@ -49,6 +49,7 @@ export function DownloadDatasetComponent({
 
   // Hugging Face Credentials Dialog State
   const [showHfCredentialsDialog, setShowHfCredentialsDialog] = useState(false)
+  const [hfDialogContext, setHfDialogContext] = useState<"sft" | "dpo" | null>(null) // New state for dialog context
   const [hfUsername, setHfUsername] = useState("")
   const [hfToken, setHfToken] = useState("")
   const [credentialDialogError, setCredentialDialogError] = useState<string | null>(null)
@@ -155,7 +156,8 @@ export function DownloadDatasetComponent({
     try {
       const response = await fetch(url, {
         method: "GET",
-        headers: headers
+        headers: headers,
+        credentials: "include"
       })
 
       if (!response.ok) {
@@ -194,31 +196,82 @@ export function DownloadDatasetComponent({
     }
   }
 
-  const handleDownloadDpo = () => {
+  const handleDownloadDpo = async () => {
+    if (!projectId) {
+      setDpoError("Project ID is missing.")
+      return
+    }
+
     setIsDownloadingDpo(true)
     setDpoError(null)
     setDpoPushError(null)
-    setTimeout(() => {
+
+    const guestUserId = localStorage.getItem("guestUserId")
+    const headers: HeadersInit = {}
+    if (guestUserId) {
+      headers[GUEST_USER_ID_HEADER] = guestUserId
+    }
+    const url = `${API_BASE_URL}/mock-next/${projectId}/dpo-dataset.jsonl`
+
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: headers,
+        credentials: "include"
+      })
+
+      if (!response.ok) {
+        let errorDetail = `Failed to download DPO dataset: ${response.status}`
+        try {
+          const errorData = await response.json()
+          errorDetail += ` - ${errorData.detail || "Unknown error"}`
+        } catch {}
+        throw new Error(errorDetail)
+      }
+
+      const contentDisposition = response.headers.get("Content-Disposition")
+      let filename = `dpo_dataset_${projectId}.jsonl`
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="?(.+)"?/i)
+        if (filenameMatch && filenameMatch.length > 1) {
+          filename = filenameMatch[1]
+        }
+      }
+
+      const blob = await response.blob()
+
+      if (blob.size === 0) {
+        setDpoError("No DPO data available to download for the current criteria.")
+        setIsDownloadingDpo(false)
+        return
+      }
+
+      const downloadUrl = window.URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = downloadUrl
+      link.setAttribute("download", filename)
+      document.body.appendChild(link)
+      link.click()
+
+      link.parentNode?.removeChild(link)
+      window.URL.revokeObjectURL(downloadUrl)
+    } catch (err: any) {
+      setDpoError(err.message || "Failed to download DPO dataset.")
+    } finally {
       setIsDownloadingDpo(false)
-    }, 1500)
+    }
   }
 
   const handlePushSftToHub = async (username: string, token: string) => {
     if (!projectId) {
       console.error("DownloadDatasetComponent: Cannot push SFT to Hub - projectId is missing.")
       setSftPushError("Project ID is missing.")
-      setShowHfCredentialsDialog(false)
-      return
-    }
-    if (!username || !token) {
-      setCredentialDialogError("Hugging Face username and token are required to push.")
       return
     }
 
     setIsPushingSft(true)
     setSftError(null)
     setSftPushError(null)
-    setCredentialDialogError(null)
     console.log(`DownloadDatasetComponent: Starting SFT dataset push to Hub for project ${projectId}`)
 
     const guestUserId = localStorage.getItem("guestUserId")
@@ -226,7 +279,7 @@ export function DownloadDatasetComponent({
     if (guestUserId) {
       headers[GUEST_USER_ID_HEADER] = guestUserId
     }
-    const url = `${API_BASE_URL}/mock-next/${projectId}/push-sft-dataset-to-hub?sft_threshold=0.75`
+    const url = `${API_BASE_URL}/mock-next/${projectId}/push-sft-dataset-to-hub`
 
     const body = JSON.stringify({
       hf_username: username,
@@ -238,7 +291,8 @@ export function DownloadDatasetComponent({
       const response = await fetch(url, {
         method: "POST",
         headers: headers,
-        body: body
+        body: body,
+        credentials: "include"
       })
 
       const responseData = await response.json()
@@ -259,9 +313,64 @@ export function DownloadDatasetComponent({
     } catch (err: any) {
       console.error("DownloadDatasetComponent: Error pushing SFT dataset to Hub:", err)
       setSftPushError(err.message || "Failed to push SFT dataset to Hub.")
-      setShowHfCredentialsDialog(false)
     } finally {
       setIsPushingSft(false)
+    }
+  }
+
+  const handlePushDpoToHub = async (username: string, token: string) => {
+    if (!projectId) {
+      console.error("DownloadDatasetComponent: Cannot push DPO to Hub - projectId is missing.")
+      setDpoPushError("Project ID is missing.")
+      return
+    }
+
+    setIsPushingDpo(true)
+    setDpoError(null)
+    setDpoPushError(null)
+    console.log(`DownloadDatasetComponent: Starting DPO dataset push to Hub for project ${projectId}`)
+
+    const guestUserId = localStorage.getItem("guestUserId")
+    const headers: HeadersInit = { "Content-Type": "application/json" }
+    if (guestUserId) {
+      headers[GUEST_USER_ID_HEADER] = guestUserId
+    }
+    const url = `${API_BASE_URL}/mock-next/${projectId}/push-dpo-dataset-to-hub`
+
+    const body = JSON.stringify({
+      hf_username: username,
+      hf_write_access_token: token,
+      do_push: true
+    })
+
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: headers,
+        body: body,
+        credentials: "include"
+      })
+
+      const responseData = await response.json()
+
+      if (!response.ok) {
+        let errorDetail = `Failed to push DPO dataset to Hub: ${response.status}`
+        errorDetail += ` - ${responseData.detail || "Unknown server error"}`
+        throw new Error(errorDetail)
+      }
+
+      console.log("DownloadDatasetComponent: DPO Dataset push successful:", responseData)
+      setDpoPushResult({
+        message: responseData.message || "Operation successful.",
+        datasetPath: responseData.dataset_path || null
+      })
+      setShowDpoPushSuccessDialog(true)
+      setShowHfCredentialsDialog(false)
+    } catch (err: any) {
+      console.error("DownloadDatasetComponent: Error pushing DPO dataset to Hub:", err)
+      setDpoPushError(err.message || "Failed to push DPO dataset to Hub.")
+    } finally {
+      setIsPushingDpo(false)
     }
   }
 
@@ -276,24 +385,14 @@ export function DownloadDatasetComponent({
       return
     }
 
-    handlePushSftToHub(hfUsername, hfToken)
-  }
-
-  const handlePushDpoToHub = () => {
-    setIsPushingDpo(true)
-    setDpoError(null)
-    setDpoPushError(null)
-    console.log("DPO Dataset push to Hub initiated (placeholder)")
-
-    setTimeout(() => {
-      setIsPushingDpo(false)
-      setDpoPushResult({
-        message: "DPO Push simulated successfully! (Placeholder)",
-        datasetPath: "kmrasmussen/simulated-dpo-dataset-placeholder"
-      })
-      setShowDpoPushSuccessDialog(true)
-      console.log("DPO Dataset push to Hub finished (placeholder)")
-    }, 1500)
+    if (hfDialogContext === "sft") {
+      handlePushSftToHub(hfUsername, hfToken)
+    } else if (hfDialogContext === "dpo") {
+      handlePushDpoToHub(hfUsername, hfToken)
+    } else {
+      setCredentialDialogError("Invalid operation context.")
+      console.error("submitHfCredentials called with invalid hfDialogContext:", hfDialogContext)
+    }
   }
 
   const handleRefreshSft = () => {
@@ -309,6 +408,7 @@ export function DownloadDatasetComponent({
 
   const isSftBusy = isRefreshingSft || isDownloadingSft || isPushingSft
   const isDpoBusy = isRefreshingDpo || isDownloadingDpo || isPushingDpo
+  const isDialogBusy = (hfDialogContext === "sft" && isPushingSft) || (hfDialogContext === "dpo" && isPushingDpo)
 
   return (
     <>
@@ -387,6 +487,7 @@ export function DownloadDatasetComponent({
                 variant="outline"
                 className="gap-2"
                 onClick={() => {
+                  setHfDialogContext("sft")
                   setHfUsername("")
                   setHfToken("")
                   setCredentialDialogError(null)
@@ -394,7 +495,7 @@ export function DownloadDatasetComponent({
                 }}
                 disabled={!isSftReady || isSftBusy}
               >
-                <UploadCloud className="h-4 w-4" />
+                {isPushingSft && hfDialogContext === "sft" ? <RefreshCw className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
                 Push SFT to Hub
               </Button>
 
@@ -402,19 +503,36 @@ export function DownloadDatasetComponent({
                 {isDownloadingDpo ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
                 {isDownloadingDpo ? "Downloading..." : "Download DPO JSONL"}
               </Button>
-              <Button variant="outline" className="gap-2" onClick={handlePushDpoToHub} disabled={!isDpoReady || isDpoBusy}>
-                {isPushingDpo ? <RefreshCw className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-                {isPushingDpo ? "Pushing..." : "Push DPO to Hub"}
+              <Button
+                variant="outline"
+                className="gap-2"
+                onClick={() => {
+                  setHfDialogContext("dpo")
+                  setHfUsername("")
+                  setHfToken("")
+                  setCredentialDialogError(null)
+                  setShowHfCredentialsDialog(true)
+                }}
+                disabled={!isDpoReady || isDpoBusy}
+              >
+                {isPushingDpo && hfDialogContext === "dpo" ? <RefreshCw className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+                Push DPO to Hub
               </Button>
             </CardFooter>
           </>
         )}
       </Card>
 
-      <Dialog open={showHfCredentialsDialog} onOpenChange={setShowHfCredentialsDialog}>
+      <Dialog open={showHfCredentialsDialog} onOpenChange={(isOpen) => {
+        if (isDialogBusy) return
+        setShowHfCredentialsDialog(isOpen)
+        if (!isOpen) setHfDialogContext(null)
+      }}>
         <DialogContent className="sm:max-w-[425px]">
           <DialogHeader>
-            <DialogTitle>Push SFT Dataset to Hugging Face Hub</DialogTitle>
+            <DialogTitle>
+              Push {hfDialogContext?.toUpperCase()} Dataset to Hugging Face Hub
+            </DialogTitle>
             <DialogDescription>
               Enter your Hugging Face username and a write access token to push the dataset. The token will only be used for this request.
             </DialogDescription>
@@ -430,7 +548,7 @@ export function DownloadDatasetComponent({
                 onChange={(e) => setHfUsername(e.target.value)}
                 className="col-span-3"
                 placeholder="Your HF Username"
-                disabled={isPushingSft}
+                disabled={isDialogBusy}
               />
             </div>
             <div className="grid grid-cols-4 items-center gap-4">
@@ -444,7 +562,7 @@ export function DownloadDatasetComponent({
                 onChange={(e) => setHfToken(e.target.value)}
                 className="col-span-3"
                 placeholder="hf_YourWriteAccessToken"
-                disabled={isPushingSft}
+                disabled={isDialogBusy}
               />
             </div>
             {credentialDialogError && (
@@ -456,12 +574,15 @@ export function DownloadDatasetComponent({
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowHfCredentialsDialog(false)} disabled={isPushingSft}>
+            <Button variant="outline" onClick={() => {
+                setShowHfCredentialsDialog(false)
+                setHfDialogContext(null)
+            }} disabled={isDialogBusy}>
               Cancel
             </Button>
-            <Button onClick={submitHfCredentials} disabled={isPushingSft}>
-              {isPushingSft ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : null}
-              {isPushingSft ? "Pushing..." : "Push to Hub"}
+            <Button onClick={submitHfCredentials} disabled={isDialogBusy}>
+              {isDialogBusy ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : null}
+              {isDialogBusy ? `Pushing ${hfDialogContext?.toUpperCase()}...` : `Push ${hfDialogContext?.toUpperCase()} to Hub`}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -499,7 +620,7 @@ export function DownloadDatasetComponent({
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <CheckCircle className="h-5 w-5 text-green-600" /> DPO Push Successful (Simulated)
+              <CheckCircle className="h-5 w-5 text-green-600" /> DPO Push Successful
             </DialogTitle>
             <DialogDescription>{dpoPushResult?.message || "The DPO dataset operation completed successfully."}</DialogDescription>
           </DialogHeader>

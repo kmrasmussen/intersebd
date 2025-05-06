@@ -284,7 +284,7 @@ export function ResponseCard({
       setIsSftLoading(true);
       const sftUrl = `${API_BASE_URL}/mock-next/${projectId}/annotation-targets/${response.annotation_target_id}/is-sft`;
       try {
-        const sftResponse = await fetch(sftUrl, { method: "GET", headers });
+        const sftResponse = await fetch(sftUrl, { method: "GET", headers, credentials: "include" });
         if (!sftResponse.ok) {
           console.error(`Failed to check SFT status: ${sftResponse.status}`);
           setIsSftExample(null);
@@ -302,7 +302,7 @@ export function ResponseCard({
       setIsDpoNegativeLoading(true);
       const dpoNegUrl = `${API_BASE_URL}/mock-next/${projectId}/annotation-targets/${response.annotation_target_id}/is-dpo-negative`;
       try {
-        const dpoNegResponse = await fetch(dpoNegUrl, { method: "GET", headers });
+        const dpoNegResponse = await fetch(dpoNegUrl, { method: "GET", headers, credentials: "include" });
         if (!dpoNegResponse.ok) {
           console.error(`Failed to check DPO Negative status: ${dpoNegResponse.status}`);
           setIsDpoNegativeExample(null);
@@ -374,6 +374,7 @@ export function ResponseCard({
       const apiResponse = await fetch(apiUrl, {
         method: "DELETE",
         headers: headers,
+        credentials: "include",
       })
 
       if (!apiResponse.ok && apiResponse.status !== 204) {
@@ -425,6 +426,7 @@ export function ResponseCard({
       const apiResponse = await fetch(apiUrl, {
         method: "POST",
         headers: headers,
+        credentials: "include",
         body: body,
       })
 
@@ -472,6 +474,7 @@ export function ResponseCard({
       const apiResponse = await fetch(apiUrl, {
         method: "DELETE",
         headers: headers,
+        credentials: "include",
       })
 
       if (!apiResponse.ok && apiResponse.status !== 204) {

@@ -71,7 +71,7 @@ export function DownloadDatasetComponent({
     const url = `${API_BASE_URL}/mock-next/${projectId}/sft-request-count`
 
     try {
-      const response = await fetch(url, { headers })
+      const response = await fetch(url, { headers, credentials: "include" })
       if (!response.ok) {
         let errorDetail = `Failed to fetch SFT count: ${response.status}`
         try {
@@ -105,7 +105,7 @@ export function DownloadDatasetComponent({
     const url = `${API_BASE_URL}/mock-next/${projectId}/dpo-ready-count`
 
     try {
-      const response = await fetch(url, { headers })
+      const response = await fetch(url, { headers, credentials: "include" })
       if (!response.ok) {
         let errorDetail = `Failed to fetch DPO ready count: ${response.status}`
         try {

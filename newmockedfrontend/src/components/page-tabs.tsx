@@ -46,7 +46,7 @@ export function PageTabs({ projectId, onApiCallSuccess }: PageTabsProps) {
       console.log(`PageTabs: Fetching current schema from ${apiUrl}`);
 
       try {
-        const response = await fetch(apiUrl, { headers });
+        const response = await fetch(apiUrl, { headers, credentials: "include" });
         if (!response.ok) {
           if (response.status === 404) {
             setSchemaError("No active schema found. Create one in the editor.");
@@ -106,7 +106,7 @@ export function PageTabs({ projectId, onApiCallSuccess }: PageTabsProps) {
       <TabsContent value="schema-editor">
         {isLoadingSchema && <div>Loading schema...</div>}
         {schemaError && !isLoadingSchema && (
-          <div className="mb-4 p-3 rounded-md bg-red-50 border border-red-200 text-red-700 flex items-center gap-2">
+          <div className="mb-4 p-3 rounded-md bg-amber-50 border border-amber-300 text-amber-700 flex items-center gap-2">
             <AlertCircle className="h-4 w-4" />
             <span>{schemaError}</span>
           </div>

@@ -130,7 +130,7 @@ export function RequestsOverviewV2({ projectId, refreshTrigger }: { projectId: s
       const url = `${API_BASE_URL}/mock-next/${projectId}/requests-summary`;
 
       try {
-        const response = await fetch(url, { headers });
+        const response = await fetch(url, { headers, credentials: "include" });
         if (!response.ok) {
           let errorDetail = `Failed to fetch requests: ${response.status}`;
           try { const errorData = await response.json(); errorDetail += ` - ${errorData.detail || 'Unknown error'}`; } catch { }

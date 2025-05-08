@@ -23,17 +23,14 @@ export function PageTabs({ projectId, onApiCallSuccess }: PageTabsProps) {
   const [currentSchema, setCurrentSchema] = useState(initialSchemaValue);
   const [isLoadingSchema, setIsLoadingSchema] = useState(false);
   const [schemaError, setSchemaError] = useState<string | null>(null);
-  const [isSchemaEmptyState, setIsSchemaEmptyState] = useState(false);
+  const [hasActiveSchema, setHasActiveSchema] = useState(false);
 
   useEffect(() => {
     if (!projectId) return;
 
     const fetchCurrentSchemaForTabs = async () => {
-      if (currentSchema !== initialSchemaValue && !schemaError && !isLoadingSchema) return;
-
       setIsLoadingSchema(true);
       setSchemaError(null);
-      setIsSchemaEmptyState(false);
       const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
       const GUEST_USER_ID_HEADER = "X-Guest-User-Id";
       const apiUrl = `${API_BASE_URL}/mock-next/${projectId}/schemas/current`;
@@ -49,9 +46,9 @@ export function PageTabs({ projectId, onApiCallSuccess }: PageTabsProps) {
         const response = await fetch(apiUrl, { headers, credentials: "include" });
         if (!response.ok) {
           if (response.status === 404) {
-            setSchemaError("No active schema found. Create one in the editor.");
-            setCurrentSchema(initialSchemaValue);
-            setIsSchemaEmptyState(true);
+            setSchemaError(null); // Not an error, just no active schema
+            setCurrentSchema(initialSchemaValue); // Use a default or empty placeholder for the editor
+            setHasActiveSchema(false);
           } else {
             let errorDetail = `HTTP error! status: ${response.status}`;
             try { const errorData = await response.json(); errorDetail += ` - ${errorData.detail || 'Unknown error'}`; } catch { /* Ignore */ }
@@ -60,13 +57,14 @@ export function PageTabs({ projectId, onApiCallSuccess }: PageTabsProps) {
         } else {
           const schemaData = await response.json();
           setCurrentSchema(JSON.stringify(schemaData.schema_content, null, 2));
-          setIsSchemaEmptyState(false);
+          setHasActiveSchema(true);
+          setSchemaError(null); // Clear any previous errors
         }
       } catch (error: any) {
         console.error("PageTabs: Failed to fetch current schema:", error);
         setSchemaError(error.message || "Failed to load schema");
-        setCurrentSchema(initialSchemaValue);
-        setIsSchemaEmptyState(true);
+        setCurrentSchema(initialSchemaValue); // Fallback to initial on error
+        setHasActiveSchema(false);
       } finally {
         setIsLoadingSchema(false);
       }
@@ -75,16 +73,26 @@ export function PageTabs({ projectId, onApiCallSuccess }: PageTabsProps) {
     fetchCurrentSchemaForTabs();
   }, [projectId]);
 
-  const handleSchemaSavedInTabs = (newSchemaData: any) => {
-    try {
-      setCurrentSchema(JSON.stringify(newSchemaData.schema_content, null, 2));
-      setIsSchemaEmptyState(false);
-      setSchemaError(null);
-    } catch (error) {
-      console.error("PageTabs: Error formatting saved schema:", error);
-      setSchemaError("Error updating schema display after save.");
+  const handleSchemaSavedInTabs = (newSchemaData: any | null) => {
+    if (newSchemaData && newSchemaData.schema_content) {
+      try {
+        setCurrentSchema(JSON.stringify(newSchemaData.schema_content, null, 2));
+        setHasActiveSchema(true);
+        setSchemaError(null);
+      } catch (error) {
+        console.error("PageTabs: Error formatting saved schema:", error);
+        setSchemaError("Error updating schema display after save.");
+        setHasActiveSchema(false); // Assume schema update failed
+      }
+    } else if (newSchemaData === null) { // Schema was deactivated
+      setCurrentSchema(initialSchemaValue); // Reset to default/empty for the editor
+      setHasActiveSchema(false);
+      setSchemaError(null); // Clear any previous errors
+      console.log("PageTabs: Active schema was deactivated.");
     }
   };
+
+  const isSchemaEditorEmpty = !hasActiveSchema && !schemaError;
 
   return (
     <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "api-call" | "schema-editor" | "finetune")} className="w-full">
@@ -106,18 +114,19 @@ export function PageTabs({ projectId, onApiCallSuccess }: PageTabsProps) {
       <TabsContent value="schema-editor">
         {isLoadingSchema && <div>Loading schema...</div>}
         {schemaError && !isLoadingSchema && (
-          <div className="mb-4 p-3 rounded-md bg-amber-50 border border-amber-300 text-amber-700 flex items-center gap-2">
+          <div className="mb-4 p-3 rounded-md bg-red-50 border border-red-300 text-red-700 flex items-center gap-2">
             <AlertCircle className="h-4 w-4" />
             <span>{schemaError}</span>
           </div>
         )}
-        {!isLoadingSchema && (
+        {!isLoadingSchema && !schemaError && (
           <SchemaEditorComponent
             title="Project Schema"
             projectId={projectId}
             initialSchema={currentSchema}
             onSchemaSaved={handleSchemaSavedInTabs}
-            isEmptyState={isSchemaEmptyState}
+            isEmptyState={isSchemaEditorEmpty}
+            hasActiveSchema={hasActiveSchema}
           />
         )}
       </TabsContent>

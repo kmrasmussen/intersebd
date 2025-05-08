@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Path, HTTPException, Depends, status, Body, Query
+
 from pydantic import BaseModel, Field
 from typing import List, Literal, Optional, Dict, Any, Union
 import uuid
@@ -2285,4 +2286,50 @@ async def download_dpo_dataset_jsonl(
             detail="Failed to generate DPO dataset due to an internal error."
         )
 
-# ... rest of the file ...
+@router.delete(
+    "/{project_id}/schemas/active",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Deactivate the currently active JSON schema for the project."
+)
+async def deactivate_current_project_schema(
+    project_id: uuid.UUID = Path(..., description="The UUID of the project"),
+    db: AsyncSession = Depends(get_db),
+    membership: models.ProjectMembership = Depends(verify_project_membership),
+):
+    """
+    Deactivates the most recently created 'is_active'=True JSON schema for the project.
+    If no active schema exists, this operation will return a 404.
+    """
+    logger.info(f"Attempting to deactivate active schema for project {project_id} by user {membership.user_id}")
+
+    # Find the current active schema
+    stmt_find_active = (
+        select(models.ProjectJsonSchema)
+        .where(models.ProjectJsonSchema.project_id == project_id)
+        .where(models.ProjectJsonSchema.is_active == True)
+        .order_by(models.ProjectJsonSchema.created_at.desc())
+    )
+    result_active = await db.execute(stmt_find_active)
+    active_schema = result_active.scalars().first()
+
+    if not active_schema:
+        logger.info(f"No active schema found for project {project_id} to deactivate.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active schema found for this project to deactivate."
+        )
+
+    try:
+        active_schema.is_active = False
+        db.add(active_schema) # Mark the instance as changed
+        await db.commit()
+        logger.info(f"Successfully deactivated schema {active_schema.id} for project {project_id}")
+        # FastAPI will return 204 No Content based on the decorator
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except Exception as e:
+        await db.rollback()
+        logger.exception(f"Error deactivating schema {active_schema.id} for project {project_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to deactivate schema due to an internal error."
+        )

@@ -28,7 +28,6 @@ from provider_keys import router as provider_keys_router
 from agent_widget import router as agent_widget_router # Import the new router
 from corsanywhere import cors_anywhere_app # Import the CORS Anywhere app
 from config import settings
-from finetuning import router as finetuning_router
 from nextmockingrouter import router as nextmocking_router
 from completion_projects import router as completion_projects_router
 from completion_project_call_keys import router as completion_project_call_keys_router
@@ -87,7 +86,6 @@ app.add_middleware(
 app.include_router(auth_router)  
 app.include_router(provider_keys_router)
 app.include_router(agent_widget_router) # Include the new router
-app.include_router(finetuning_router)
 app.include_router(nextmocking_router)
 app.include_router(completion_projects_router)
 app.include_router(completion_project_call_keys_router)

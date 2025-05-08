@@ -25,7 +25,6 @@ from sqlalchemy.exc import SQLAlchemyError # Import SQLAlchemyError
 # imports from solution
 from auth import router as auth_router
 from provider_keys import router as provider_keys_router
-from completion_alternatives import router as completion_alternatives_router
 from agent_widget import router as agent_widget_router # Import the new router
 from corsanywhere import cors_anywhere_app # Import the CORS Anywhere app
 from config import settings
@@ -87,7 +86,6 @@ app.add_middleware(
 
 app.include_router(auth_router)  
 app.include_router(provider_keys_router)
-app.include_router(completion_alternatives_router)
 app.include_router(agent_widget_router) # Include the new router
 app.include_router(finetuning_router)
 app.include_router(nextmocking_router)
